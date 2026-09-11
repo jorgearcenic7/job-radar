@@ -282,7 +282,7 @@ The ten filtering examples were run manually and are not yet committed as an aut
 - [x] Add a local web interface for browsing and filtering listings.
 - [x] Configure a hosted PostgreSQL database with Neon.
 - [x] Deploy the web application on Vercel.
-- [ ] Schedule the Docker pipeline through GitHub Actions.
+- [x] Schedule the Docker pipeline through GitHub Actions.
 - [ ] Add further company integrations where feasible.
 - [ ] Consider email notifications as a later enhancement.
 
@@ -367,5 +367,5 @@ Current cloud flow:
 
 GitHub source code → Vercel / Next.js → Neon PostgreSQL
 
-The ingestion pipeline still runs manually. Automated scheduled execution
-through GitHub Actions is the next infrastructure milestone.
+The ingestion pipeline runs automatically every day at 06:00 Europe/Madrid
+through GitHub Actions. It can also be triggered manually with workflow_dispatch.
