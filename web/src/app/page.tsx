@@ -9,12 +9,15 @@ type Job = {
   title: string;
   location: string | null;
   url: string;
+  salary_text: string | null;
+  experience_text: string | null;
   selected: boolean;
 };
 
 type Params = {
   q?: string | string[];
   company?: string | string[];
+  location?: string | string[];
   selected?: string | string[];
 };
 
@@ -26,11 +29,18 @@ export default async function Home({
   const params = await searchParams;
 
   const q = typeof params.q === "string" ? params.q.trim() : "";
+
   const company =
     typeof params.company === "string" ? params.company : "";
+
+  const location =
+    typeof params.location === "string"
+      ? params.location.trim()
+      : "Spain";
+
   const selected = params.selected === "1";
 
-  const [summary, companies, results] = await Promise.all([
+  const [summary, companies, locations, results] = await Promise.all([
     db.query<{ total: number; selected: number }>(`
       SELECT
         COUNT(*)::int AS total,
@@ -42,6 +52,14 @@ export default async function Home({
       "SELECT DISTINCT company FROM jobs ORDER BY company"
     ),
 
+    db.query<{ location: string }>(`
+      SELECT DISTINCT location
+      FROM jobs
+      WHERE location IS NOT NULL
+        AND btrim(location) <> ''
+      ORDER BY location
+    `),
+
     db.query<Job>(
       `SELECT
         source,
@@ -50,14 +68,20 @@ export default async function Home({
         title,
         location,
         url,
+        salary_text,
+        experience_text,
         selected
       FROM jobs
       WHERE ($1 = '' OR strpos(lower(title), lower($1)) > 0)
         AND ($2 = '' OR company = $2)
-        AND ($3::boolean = false OR selected = true)
+        AND (
+          $3 = ''
+          OR strpos(lower(COALESCE(location, '')), lower($3)) > 0
+        )
+        AND ($4::boolean = false OR selected = true)
       ORDER BY selected DESC, company, title, source_job_id
       LIMIT 100`,
-      [q, company, selected]
+      [q, company, location, selected]
     ),
   ]);
 
@@ -96,12 +120,15 @@ export default async function Home({
 
             <h1 className="max-w-2xl text-4xl font-semibold leading-[1.08] tracking-[-0.04em] text-white sm:text-5xl">
               Encuentra la oportunidad
-              <span className="text-slate-400"> que merece tu atención.</span>
+              <span className="text-slate-400">
+                {" "}que merece tu atención.
+              </span>
             </h1>
 
             <p className="mt-5 max-w-xl text-sm leading-6 text-slate-400 sm:text-base">
               Job Radar reúne y filtra automáticamente oportunidades de
-              ingeniería de datos en empresas de producto y software.
+              ingeniería de datos en empresas de producto, software y
+              FinTechs.
             </p>
           </div>
         </div>
@@ -186,6 +213,30 @@ export default async function Home({
               ))}
             </select>
 
+            <select
+              name="location"
+              defaultValue={location}
+              aria-label="Filtrar por ubicación"
+              className="company-select"
+            >
+              <option value="">Todas las ubicaciones</option>
+              <option value="Spain">España</option>
+
+              {locations.rows
+                .filter(
+                  (item) =>
+                    item.location.toLowerCase() !== "spain"
+                )
+                .map((item) => (
+                  <option
+                    key={item.location}
+                    value={item.location}
+                  >
+                    {item.location}
+                  </option>
+                ))}
+            </select>
+
             <label className="match-toggle">
               <input
                 type="checkbox"
@@ -201,7 +252,7 @@ export default async function Home({
               Aplicar filtros
             </button>
 
-            {(q || company || selected) && (
+            {(q || company || location !== "Spain" || selected) && (
               <a href="/" className="clear-link">
                 Limpiar
               </a>
@@ -267,7 +318,7 @@ export default async function Home({
                       <svg
                         aria-hidden="true"
                         viewBox="0 0 24 24"
-                        className="h-4 w-4"
+                        className="h-4 w-4 shrink-0"
                         fill="none"
                         stroke="currentColor"
                         strokeWidth="1.7"
@@ -280,6 +331,22 @@ export default async function Home({
                         {job.location || "Ubicación no indicada"}
                       </span>
                     </div>
+
+                    {(job.salary_text || job.experience_text) && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {job.salary_text && (
+                          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-800">
+                            {job.salary_text}
+                          </span>
+                        )}
+
+                        {job.experience_text && (
+                          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                            {job.experience_text}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <a
@@ -300,9 +367,7 @@ export default async function Home({
         <footer className="mt-14 flex flex-col justify-between gap-2 border-t border-slate-200 pt-6 text-xs text-slate-400 sm:flex-row">
           <p>Job Radar · Personal Data Engineering Job Monitor</p>
 
-          <p>
-            Máximo 100 resultados por consulta
-          </p>
+          <p>Máximo 100 resultados por consulta</p>
         </footer>
       </div>
     </main>

@@ -30,15 +30,64 @@ def normalize(text):
 def plain_text(html):
     parser = TextExtractor()
     parser.feed(unescape(html))
-    return normalize(" ".join(parser.parts))
+    return re.sub(r"\s+", " ", " ".join(parser.parts)).strip()
+
+
+def extract_salary(description):
+    patterns = [
+        r"(?:€|\$|£)\s?\d{2,3}(?:[.,]\d{3})*(?:\s?[kK])?"
+        r"\s*(?:-|–|—|to)\s*"
+        r"(?:€|\$|£)?\s?\d{2,3}(?:[.,]\d{3})*(?:\s?[kK])?"
+        r"(?:\s*(?:EUR|USD|GBP))?",
+
+        r"\b\d{2,3}(?:[.,]\d{3})+\s*(?:EUR|USD|GBP)"
+        r"\s*(?:-|–|—|to)\s*"
+        r"\d{2,3}(?:[.,]\d{3})+\s*(?:EUR|USD|GBP)?\b",
+
+        r"\b\d{2,3}\s?[kK]\s*(?:-|–|—|to)\s*"
+        r"\d{2,3}\s?[kK]\s*(?:EUR|USD|GBP)\b",
+
+        r"(?:€|\$|£)\s?\d{2,3}(?:[.,]\d{3})+"
+        r"(?:\s*(?:EUR|USD|GBP))?"
+        r"(?:\s*(?:per year|annually|a year|/year))?",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, description, re.IGNORECASE)
+        if match:
+            return match.group(0).strip()
+
+    return None
+
+
+def extract_experience(description):
+    patterns = [
+        r"\b(?:at least|minimum(?: of)?|min\.?)?\s*"
+        r"\d{1,2}\+?\s+years?\s+(?:of\s+)?"
+        r"(?:relevant\s+|professional\s+|hands-on\s+|industry\s+)?"
+        r"experience\b",
+
+        r"\b\d{1,2}\s*(?:-|–|—|to)\s*\d{1,2}\s+years?"
+        r"\s+(?:of\s+)?(?:relevant\s+|professional\s+)?experience\b",
+
+        r"\b\d{1,2}\+?\s+years['’]?\s+experience\b",
+
+        r"\b(?:mínimo|minimo|al menos)?\s*"
+        r"\d{1,2}\+?\s+años?\s+de\s+experiencia\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, description, re.IGNORECASE)
+        if match:
+            return match.group(0).strip()
+
+    return None
 
 
 def classify(job):
     title = normalize(job["title"])
-    description = plain_text(job.get("content") or "")
+    description = normalize(plain_text(job.get("content") or ""))
 
-    # El nivel se evalúa en el título: la descripción puede mencionar
-    # a un responsable senior sin que ese sea el nivel de la vacante.
     senior = re.search(
         r"\b(senior|sr|staff|principal|lead|head|director|manager"
         r"|architect|gerente|jefe)\b",
@@ -54,11 +103,12 @@ def classify(job):
         r"|ingenier[oa]|desarrollador[a]?)\b",
         title,
     )
+
     data_domain = re.search(
-        r"\b(data|datos|analytics|etl|elt)\b", title
+        r"\b(data|datos|analytics|etl|elt)\b",
+        title,
     )
 
-    # Cada grupo cuenta una sola vez aunque se mencione varias veces.
     signals = [
         r"\b(?:data|etl|elt)\s+pipelines?\b|\bpipelines?\s+de\s+datos\b",
         r"\b(?:etl|elt)\b|extract.{0,30}transform.{0,30}load",
@@ -67,6 +117,7 @@ def classify(job):
         r"\bdata model(?:ing|ling)\b|\bmodelado de datos\b",
         r"\b(?:batch|stream) processing\b|\bprocesamiento por lotes\b",
     ]
+
     evidence_count = sum(
         bool(re.search(pattern, description))
         for pattern in signals
@@ -87,6 +138,7 @@ def classify(job):
         r"|graduate|ii|1|2)\b|mid-level",
         title,
     )
+
     level = (
         "Nivel inicial/intermedio indicado en el título"
         if explicit_level
@@ -102,55 +154,81 @@ def classify(job):
     return status, level, reason
 
 
-
 def save_jobs(company, jobs):
     import psycopg
 
     sql = """
         INSERT INTO jobs (
-            source, source_job_id, company, title, location,
-            url, description, selected, match_status, match_reason
+            source,
+            source_job_id,
+            company,
+            title,
+            location,
+            url,
+            description,
+            salary_text,
+            experience_text,
+            selected,
+            match_status,
+            match_reason
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (
+            %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s
+        )
         ON CONFLICT (source, source_job_id) DO UPDATE SET
             company = EXCLUDED.company,
             title = EXCLUDED.title,
             location = EXCLUDED.location,
             url = EXCLUDED.url,
             description = EXCLUDED.description,
+            salary_text = EXCLUDED.salary_text,
+            experience_text = EXCLUDED.experience_text,
             selected = EXCLUDED.selected,
             match_status = EXCLUDED.match_status,
             match_reason = EXCLUDED.match_reason,
             last_seen_at = CURRENT_TIMESTAMP
     """
 
-    with psycopg.connect(os.getenv("DATABASE_URL", ""), connect_timeout=10) as conn:
+    with psycopg.connect(
+        os.getenv("DATABASE_URL", ""),
+        connect_timeout=10,
+    ) as conn:
         with conn.cursor() as cursor:
             for job in jobs:
                 result = classify(job)
                 status, level, reason = result or (None, None, None)
 
-                cursor.execute(sql, (
-                    "greenhouse",
-                    str(job["id"]),
-                    company,
-                    job["title"],
-                    (job.get("location") or {}).get("name"),
-                    job["absolute_url"],
-                    plain_text(job.get("content") or ""),
-                    result is not None,
-                    status,
-                    f"{level}: {reason}" if result else None,
-                ))
+                location = (job.get("location") or {}).get("name")
+                description = plain_text(job.get("content") or "")
+
+                cursor.execute(
+                    sql,
+                    (
+                        "greenhouse",
+                        str(job["id"]),
+                        company,
+                        job["title"],
+                        location,
+                        job["absolute_url"],
+                        description,
+                        extract_salary(description),
+                        extract_experience(description),
+                        result is not None,
+                        status,
+                        f"{level}: {reason}" if result else None,
+                    ),
+                )
 
     print(f"  Ofertas guardadas o actualizadas: {len(jobs)}")
+
 
 def main():
     failed = False
 
     for company, board in COMPANIES.items():
         url = (
-            f"https://boards-api.greenhouse.io/v1/boards/"
+            "https://boards-api.greenhouse.io/v1/boards/"
             f"{board}/jobs?content=true"
         )
 
@@ -160,18 +238,22 @@ def main():
 
             jobs = data["jobs"]
             save_jobs(company, jobs)
+
             print(f"\n{company}: {len(jobs)} ofertas consultadas")
             selected = 0
 
             for job in jobs:
                 result = classify(job)
+
                 if result is None:
                     continue
 
                 selected += 1
                 status, level, reason = result
+
                 location = (job.get("location") or {}).get(
-                    "name", "No indicada"
+                    "name",
+                    "No indicada",
                 )
 
                 print(f"\n  [{status}] {job['title']}")
