@@ -101,6 +101,49 @@ def classify(job):
     return status, level, reason
 
 
+
+def save_jobs(company, jobs):
+    import psycopg
+
+    sql = """
+        INSERT INTO jobs (
+            source, source_job_id, company, title, location,
+            url, description, selected, match_status, match_reason
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (source, source_job_id) DO UPDATE SET
+            company = EXCLUDED.company,
+            title = EXCLUDED.title,
+            location = EXCLUDED.location,
+            url = EXCLUDED.url,
+            description = EXCLUDED.description,
+            selected = EXCLUDED.selected,
+            match_status = EXCLUDED.match_status,
+            match_reason = EXCLUDED.match_reason,
+            last_seen_at = CURRENT_TIMESTAMP
+    """
+
+    with psycopg.connect(connect_timeout=10) as conn:
+        with conn.cursor() as cursor:
+            for job in jobs:
+                result = classify(job)
+                status, level, reason = result or (None, None, None)
+
+                cursor.execute(sql, (
+                    "greenhouse",
+                    str(job["id"]),
+                    company,
+                    job["title"],
+                    (job.get("location") or {}).get("name"),
+                    job["absolute_url"],
+                    plain_text(job.get("content") or ""),
+                    result is not None,
+                    status,
+                    f"{level}: {reason}" if result else None,
+                ))
+
+    print(f"  Ofertas guardadas o actualizadas: {len(jobs)}")
+
 def main():
     failed = False
 
@@ -115,6 +158,7 @@ def main():
                 data = json.load(response)
 
             jobs = data["jobs"]
+            save_jobs(company, jobs)
             print(f"\n{company}: {len(jobs)} ofertas consultadas")
             selected = 0
 
