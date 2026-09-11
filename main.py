@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from html import unescape
 from html.parser import HTMLParser
@@ -123,7 +124,7 @@ def save_jobs(company, jobs):
             last_seen_at = CURRENT_TIMESTAMP
     """
 
-    with psycopg.connect(connect_timeout=10) as conn:
+    with psycopg.connect(os.getenv("DATABASE_URL", ""), connect_timeout=10) as conn:
         with conn.cursor() as cursor:
             for job in jobs:
                 result = classify(job)
