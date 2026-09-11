@@ -169,3 +169,84 @@ Málaga -> Spain
 Barcelona -> Spain
 Spain - Remote -> Spain
 London -> United Kingdom
+```
+
+If several locations are published, a job can belong to several countries.
+
+Explicit country names and ISO country codes take priority over city inference. For example, `Valencia, ES` is classified as Spain.
+
+The web filter contains countries only. Spain is selected by default, while each job card keeps the original location published by the company.
+
+## Technology stack
+
+- Python 3.12 for ingestion, enrichment and matching.
+- PostgreSQL 17 and Neon for persistent production storage.
+- Psycopg 3 for database access.
+- Docker for reproducible pipeline execution.
+- Next.js, React and TypeScript for the web application.
+- Tailwind CSS for interface styling.
+- Vercel for production hosting.
+- GitHub for source control.
+- GitHub Actions for daily automation.
+- geonamescache for country normalization.
+- curl_cffi for the Revolut Careers integration.
+
+## Automation
+
+The ingestion pipeline runs automatically every day at **06:00 Europe/Madrid** through GitHub Actions.
+
+The local computer does not need to remain powered on.
+
+## Web application
+
+Current functionality includes:
+
+- Job title search.
+- Company filter.
+- Country-only filter.
+- Spain selected by default.
+- Option to show only matches.
+- Original published location.
+- Salary when available.
+- Experience requirement when available.
+- Direct link to the original job listing.
+
+Queries currently return a maximum of 100 results.
+
+## Current limitations
+
+- No email notifications yet.
+- Closed listings are not automatically marked inactive.
+- Pagination is not implemented.
+- Matching remains rule-based.
+- Not every connector has automated tests.
+- External ATS and career websites may change their APIs or HTML.
+
+## Roadmap
+
+- [x] Dockerized ingestion pipeline
+- [x] PostgreSQL persistence and idempotent upserts
+- [x] Next.js web application
+- [x] Neon production database
+- [x] Vercel deployment
+- [x] Daily GitHub Actions execution
+- [x] Multiple ATS integrations
+- [x] Revolut integration
+- [x] Salary and experience extraction
+- [x] Buena coincidencia / Stretch matching
+- [x] Country normalization
+- [x] Country-only web filtering
+- [x] Spain selected by default
+- [ ] Automated connector tests
+- [ ] Closed-listing detection
+- [ ] Pagination
+- [ ] Email notifications
+- [ ] More product, software and FinTech companies
+
+## Security
+
+Database credentials, connection strings and secrets are stored in environment variables or GitHub secrets and are never committed to the repository.
+
+## Production
+
+https://job-radar-snowy.vercel.app
