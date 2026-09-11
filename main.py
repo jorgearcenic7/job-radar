@@ -6,7 +6,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 
-COMPANIES = {"Typeform": "typeform"}
+COMPANIES = {
+    "Typeform": "typeform",
+    "N26": "n26",
+    "Datadog": "datadog",
+}
 
 
 class TextExtractor(HTMLParser):
