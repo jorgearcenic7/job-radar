@@ -17,7 +17,7 @@ type Job = {
 type Params = {
   q?: string | string[];
   company?: string | string[];
-  location?: string | string[];
+  country?: string | string[];
   selected?: string | string[];
 };
 
@@ -33,14 +33,14 @@ export default async function Home({
   const company =
     typeof params.company === "string" ? params.company : "";
 
-  const location =
-    typeof params.location === "string"
-      ? params.location.trim()
+  const country =
+    typeof params.country === "string"
+      ? params.country.trim()
       : "Spain";
 
   const selected = params.selected === "1";
 
-  const [summary, companies, locations, results] = await Promise.all([
+  const [summary, companies, countries, results] = await Promise.all([
     db.query<{ total: number; selected: number }>(`
       SELECT
         COUNT(*)::int AS total,
@@ -52,12 +52,18 @@ export default async function Home({
       "SELECT DISTINCT company FROM jobs ORDER BY company"
     ),
 
-    db.query<{ location: string }>(`
-      SELECT DISTINCT location
+    db.query<{ country: string }>(`
+      SELECT DISTINCT country
       FROM jobs
-      WHERE location IS NOT NULL
-        AND btrim(location) <> ''
-      ORDER BY location
+      CROSS JOIN LATERAL
+        unnest(
+          COALESCE(
+            countries,
+            ARRAY[]::text[]
+          )
+        ) AS c(country)
+      WHERE country <> ''
+      ORDER BY country
     `),
 
     db.query<Job>(
@@ -76,12 +82,17 @@ export default async function Home({
         AND ($2 = '' OR company = $2)
         AND (
           $3 = ''
-          OR strpos(lower(COALESCE(location, '')), lower($3)) > 0
+          OR $3 = ANY(
+            COALESCE(
+              countries,
+              ARRAY[]::text[]
+            )
+          )
         )
         AND ($4::boolean = false OR selected = true)
       ORDER BY selected DESC, company, title, source_job_id
       LIMIT 100`,
-      [q, company, location, selected]
+      [q, company, country, selected]
     ),
   ]);
 
@@ -214,27 +225,23 @@ export default async function Home({
             </select>
 
             <select
-              name="location"
-              defaultValue={location}
-              aria-label="Filtrar por ubicación"
+              name="country"
+              defaultValue={country}
+              aria-label="Filtrar por país"
               className="company-select"
             >
-              <option value="">Todas las ubicaciones</option>
-              <option value="Spain">España</option>
+              <option value="">
+                Todos los países
+              </option>
 
-              {locations.rows
-                .filter(
-                  (item) =>
-                    item.location.toLowerCase() !== "spain"
-                )
-                .map((item) => (
-                  <option
-                    key={item.location}
-                    value={item.location}
-                  >
-                    {item.location}
-                  </option>
-                ))}
+              {countries.rows.map((item) => (
+                <option
+                  key={item.country}
+                  value={item.country}
+                >
+                  {item.country}
+                </option>
+              ))}
             </select>
 
             <label className="match-toggle">
@@ -252,7 +259,7 @@ export default async function Home({
               Aplicar filtros
             </button>
 
-            {(q || company || location !== "Spain" || selected) && (
+            {(q || company || country !== "Spain" || selected) && (
               <a href="/" className="clear-link">
                 Limpiar
               </a>
