@@ -4,7 +4,7 @@ A personal job monitoring project focused on data engineering opportunities at f
 
 Job Radar retrieves public job listings, applies rule-based relevance filters, and stores the results in PostgreSQL. The pipeline runs in Docker and can be executed locally through Docker Compose.
 
-**Status: local ingestion, filtering, and persistence are implemented. Web deployment and scheduled execution are not implemented yet.**
+**Status: local ingestion, filtering, PostgreSQL persistence, and a local web interface are implemented. Cloud deployment and scheduled execution are not implemented yet.**
 
 ## Why this project?
 
@@ -43,6 +43,9 @@ A successful source response with zero matches is a valid result. A failed reque
 | Docker | Containerized Python and database environments |
 | Docker Compose | Service configuration, networking, health checks, and volumes |
 | Git and GitHub | Version control and source hosting |
+| Next.js, React, and TypeScript | Server-rendered web interface |
+| Tailwind CSS | Interface styling |
+| Node.js and node-postgres (pg) | Web runtime and server-side database queries |
 | Windows with WSL 2 / Ubuntu | Current local development environment |
 
 The current implementation does not use an LLM, embeddings, or a paid job data API.
@@ -57,7 +60,7 @@ flowchart TD
     D --> E["Persistent Docker volume"]
 ```
 
-Docker Compose defines two services:
+The base Compose file defines two services. `compose.web.yaml` adds the web service:
 
 - `db`: PostgreSQL, with a health check and persistent storage.
 - `pipeline`: the Python application, which waits for the database to become healthy.
@@ -259,7 +262,8 @@ The ten filtering examples were run manually and are not yet committed as an aut
 - No persistent execution history or alerting exists yet.
 - Source failures cause the pipeline to finish unsuccessfully.
 - Successful companies may already be committed when another source fails.
-- There is no web interface, hosted database, or deployment yet.
+- The web interface runs locally; there is no hosted database or cloud deployment yet.
+- Web results are limited to 100 per query; pagination is not implemented.
 - There is no automatic daily schedule.
 - There are no email notifications.
 - There is no closed-listing detection.
@@ -274,7 +278,7 @@ The ten filtering examples were run manually and are not yet committed as an aut
 - [x] Verify repeat ingestion without duplicates.
 - [ ] Commit automated tests for filtering and persistence.
 - [ ] Evaluate location eligibility for Spain.
-- [ ] Add a web interface for browsing and filtering listings.
+- [x] Add a local web interface for browsing and filtering listings.
 - [ ] Configure a hosted PostgreSQL database.
 - [ ] Deploy the web application on Vercel.
 - [ ] Schedule the Docker pipeline through GitHub Actions.
@@ -295,3 +299,45 @@ Keep implemented capabilities, source coverage, setup instructions, validation e
 - [Psycopg documentation](https://www.psycopg.org/psycopg3/docs/)
 - [Docker Compose documentation](https://docs.docker.com/compose/)
 - [PostgreSQL documentation](https://www.postgresql.org/docs/17/)
+
+## Local web interface
+
+The Next.js application lives in `web/`. It reads PostgreSQL directly
+from server-side code using `pg`. Database credentials are supplied through
+environment variables and are not sent to the browser.
+
+Implemented features:
+
+- Global counters for stored listings, preliminary matches, and companies.
+- Case-insensitive title search.
+- Company selection.
+- An option to show only preliminary matches.
+- Links to the original job listings.
+- An empty-results message.
+- Up to 100 results per query, ordered by company and title.
+
+Counters represent the complete database, not the filtered results.
+The current page has been checked manually in the browser.
+Automated browser tests have not been added.
+
+### Additional project files
+
+- `web/`: Next.js application and its npm lockfile.
+- `web/src/app/page.tsx`: server-rendered listing page and filters.
+- `web/src/app/globals.css`: interface styles.
+- `web/src/lib/db.ts`: server-only PostgreSQL connection pool.
+- `compose.web.yaml`: local web service configuration.
+
+### Install web dependencies
+
+From the repository root, in Ubuntu / Bash:
+
+```bash
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -e npm_config_cache=/tmp/npm-cache \
+  -v "$PWD/web:/app" \
+  -w /app \
+  node:24-bookworm-slim npm ci
+
+```
