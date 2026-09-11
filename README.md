@@ -4,7 +4,7 @@ A personal job monitoring project focused on data engineering opportunities at f
 
 Job Radar retrieves public job listings, applies rule-based relevance filters, and stores the results in PostgreSQL. The pipeline runs in Docker and can be executed locally through Docker Compose.
 
-**Status: local ingestion, filtering, PostgreSQL persistence, and a local web interface are implemented. Cloud deployment and scheduled execution are not implemented yet.**
+**Status: ingestion, filtering, PostgreSQL persistence, a web interface, hosted PostgreSQL, and production deployment are implemented. Scheduled execution and notifications are not implemented yet.**
 
 ## Why this project?
 
@@ -46,6 +46,8 @@ A successful source response with zero matches is a valid result. A failed reque
 | Next.js, React, and TypeScript | Server-rendered web interface |
 | Tailwind CSS | Interface styling |
 | Node.js and node-postgres (pg) | Web runtime and server-side database queries |
+| Neon PostgreSQL | Managed cloud PostgreSQL database |
+| Vercel | Production hosting for the Next.js application |
 | Windows with WSL 2 / Ubuntu | Current local development environment |
 
 The current implementation does not use an LLM, embeddings, or a paid job data API.
@@ -262,7 +264,6 @@ The ten filtering examples were run manually and are not yet committed as an aut
 - No persistent execution history or alerting exists yet.
 - Source failures cause the pipeline to finish unsuccessfully.
 - Successful companies may already be committed when another source fails.
-- The web interface runs locally; there is no hosted database or cloud deployment yet.
 - Web results are limited to 100 per query; pagination is not implemented.
 - There is no automatic daily schedule.
 - There are no email notifications.
@@ -279,8 +280,8 @@ The ten filtering examples were run manually and are not yet committed as an aut
 - [ ] Commit automated tests for filtering and persistence.
 - [ ] Evaluate location eligibility for Spain.
 - [x] Add a local web interface for browsing and filtering listings.
-- [ ] Configure a hosted PostgreSQL database.
-- [ ] Deploy the web application on Vercel.
+- [x] Configure a hosted PostgreSQL database with Neon.
+- [x] Deploy the web application on Vercel.
 - [ ] Schedule the Docker pipeline through GitHub Actions.
 - [ ] Add further company integrations where feasible.
 - [ ] Consider email notifications as a later enhancement.
@@ -341,3 +342,30 @@ docker run --rm \
   node:24-bookworm-slim npm ci
 
 ```
+
+## Cloud deployment
+
+Job Radar is now deployed in production:
+
+**Production URL:** https://job-radar-snowy.vercel.app
+
+The production architecture uses:
+
+- Vercel to host the Next.js web application.
+- Neon as the managed PostgreSQL database.
+- `DATABASE_URL` as the server-side database connection variable.
+- GitHub as the source code repository.
+- Docker and Docker Compose for the local development environment.
+
+The local `jobs` table was migrated to Neon and the production deployment
+was manually verified to load the stored job listings successfully.
+
+Database credentials and connection strings are stored as environment
+variables and are not committed to the repository.
+
+Current cloud flow:
+
+GitHub source code → Vercel / Next.js → Neon PostgreSQL
+
+The ingestion pipeline still runs manually. Automated scheduled execution
+through GitHub Actions is the next infrastructure milestone.
