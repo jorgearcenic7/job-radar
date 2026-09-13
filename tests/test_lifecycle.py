@@ -2,7 +2,10 @@ import os
 import unittest
 from pathlib import Path
 
-import psycopg
+try:
+    import psycopg
+except ModuleNotFoundError:
+    psycopg = None
 
 import main
 
@@ -13,8 +16,8 @@ SOURCE = "test:connector"
 
 
 @unittest.skipUnless(
-    TEST_DATABASE_URL,
-    "TEST_DATABASE_URL no configurada",
+    TEST_DATABASE_URL and psycopg is not None,
+    "PostgreSQL de pruebas no configurado",
 )
 class LifecycleTests(unittest.TestCase):
     @classmethod

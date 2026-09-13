@@ -1360,6 +1360,132 @@ def fetch_lingokids():
 
 
 
+
+def fetch_caixabank_tech():
+    careers_url = (
+        "https://www.caixabanktech.com/"
+        "es/join-us-es/"
+    )
+
+    listing = fetch_text(careers_url)
+
+    raw_links = re.findall(
+        r'''href=["']([^"']+)["']''',
+        listing,
+        re.IGNORECASE,
+    )
+
+    job_urls = set()
+
+    for raw_link in raw_links:
+        link = unescape(raw_link)
+        link = link.split("#", 1)[0].split("?", 1)[0]
+
+        if link.startswith("/"):
+            link = (
+                "https://www.caixabanktech.com"
+                + link
+            )
+
+        if re.fullmatch(
+            r"https://(?:www\.)?caixabanktech\.com/"
+            r"es/job/[^/]+/?",
+            link,
+            re.IGNORECASE,
+        ):
+            job_urls.add(link.rstrip("/") + "/")
+
+    if not job_urls:
+        raise ValueError(
+            "CaixaBank Tech: no job links found"
+        )
+
+    jobs = []
+
+    for url in sorted(job_urls):
+        page = fetch_text(url)
+        page_text = plain_text(page)
+
+        title_match = re.search(
+            r"<title[^>]*>\s*"
+            r"CaixaBank Tech\s*\|\s*"
+            r"(.*?)</title>",
+            page,
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        if not title_match:
+            title_match = re.search(
+                r"<h1[^>]*>(.*?)</h1>",
+                page,
+                re.IGNORECASE | re.DOTALL,
+            )
+
+        if not title_match:
+            raise ValueError(
+                f"CaixaBank Tech: title not found: {url}"
+            )
+
+        title = plain_text(title_match.group(1))
+
+        location_match = re.search(
+            r"Ubicaci[oó]n:\s*(.+?)"
+            r"(?=\s+(?:Jornada Laboral|Contrato|Vacantes):)",
+            page_text,
+            re.IGNORECASE,
+        )
+
+        location = None
+
+        if location_match:
+            raw_location = location_match.group(1).strip()
+
+            cities = re.findall(
+                r"\b(?:Barcelona|Madrid|Sevilla)\b",
+                raw_location,
+                re.IGNORECASE,
+            )
+
+            if cities:
+                location = "; ".join(dict.fromkeys(
+                    city.title()
+                    for city in cities
+                ))
+            else:
+                location = raw_location
+
+        description_match = re.search(
+            r"\bBuscamos personas\b",
+            page_text,
+            re.IGNORECASE,
+        )
+
+        description = (
+            page_text[description_match.start():]
+            if description_match
+            else page_text
+        )
+
+        source_job_id = (
+            url.rstrip("/").rsplit("/", 1)[-1]
+        )
+
+        jobs.append({
+            "source": "caixabank-tech:careers",
+            "source_job_id": source_job_id,
+            "company": "CaixaBank Tech",
+            "title": title,
+            "location": location,
+            "url": url,
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": extract_experience(
+                description
+            ),
+        })
+
+    return jobs
+
 def revolut_slug(title):
     value = unicodedata.normalize(
         "NFKD",
@@ -2082,6 +2208,7 @@ def main():
         ("Seedtag", fetch_seedtag),
         ("Lingokids", fetch_lingokids),
         ("Revolut", fetch_revolut),
+        ("CaixaBank Tech", fetch_caixabank_tech),
     ]
 
     for company, fetcher in extra_sources:
@@ -2097,7 +2224,8 @@ def main():
             print(
                 f"{company}: {len(jobs)} ofertas consultadas "
                 f"({selected} coincidencias; "
-        f"{new_jobs} nuevas; {closed_jobs} cerradas)"
+                f"{new_jobs} nuevas; "
+                f"{closed_jobs} cerradas)"
             )
 
         except Exception as error:

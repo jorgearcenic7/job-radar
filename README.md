@@ -23,6 +23,7 @@ Implemented:
 - Spain selected by default.
 - PostgreSQL upserts to avoid duplicates.
 - Safe closed-listing detection by company snapshot.
+- Automated connector and lifecycle tests in GitHub Actions.
 
 Not implemented yet:
 
@@ -55,6 +56,7 @@ Not implemented yet:
 | Mastercard | Workday |
 | BBVA | Workday |
 | Santander | Workday |
+| CaixaBank Tech | Official careers site |
 | Spendesk | Teamtailor |
 | Seedtag | Teamtailor |
 | Lingokids | Teamtailor |
@@ -241,7 +243,7 @@ The web displays the total number of filtered results and allows navigation betw
 - [x] Country normalization
 - [x] Country-only web filtering
 - [x] Spain selected by default
-- [ ] Automated connector tests
+- [x] Automated connector tests
 - [x] Closed-listing detection
 - [x] Pagination
 - [ ] Email notifications
