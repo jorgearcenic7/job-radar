@@ -763,17 +763,22 @@ def fetch_ashby(company, board):
 def workday_relevant_title(title):
     title = normalize(title)
 
-    return re.search(
-        r"\b(data|analytics?|etl|elt|mlops)\b"
-        r"|business intelligence"
-        r"|machine learning"
-        r"|artificial intelligence"
-        r"|software engineer"
-        r"|platform engineer"
-        r"|backend engineer",
-        title,
-    ) is not None
+    patterns = (
+        r"\bdata (?:engineer|engineering|platform|infrastructure"
+        r"|warehouse|scientist|analyst)\b",
+        r"\b(?:engineer|engineering|platform).*?\bdata\b",
+        r"\banalytics engineer\b",
+        r"\bbusiness intelligence "
+        r"(?:engineer|developer|analyst)\b",
+        r"\b(?:etl|elt)(?: engineer| developer)?\b",
+        r"\b(?:machine learning|mlops|artificial intelligence)\b",
+        r"\b(?:software|platform|backend) engineer\b",
+    )
 
+    return any(
+        re.search(pattern, title)
+        for pattern in patterns
+    )
 
 def fetch_workday(company, host, tenant, site):
     base_url = f"https://{host}/wday/cxs/{tenant}/{site}"
@@ -781,6 +786,7 @@ def fetch_workday(company, host, tenant, site):
     limit = 20
     offset = 0
     postings = []
+    seen_paths = set()
 
     while True:
         payload = json.dumps({
@@ -808,10 +814,24 @@ def fetch_workday(company, host, tenant, site):
         if not page:
             break
 
-        postings.extend(page)
-        offset += len(page)
+        new_page = []
 
-        if offset >= int(data.get("total") or 0):
+        for posting in page:
+            external_path = posting.get("externalPath")
+
+            if not external_path or external_path in seen_paths:
+                continue
+
+            seen_paths.add(external_path)
+            new_page.append(posting)
+
+        if not new_page:
+            break
+
+        postings.extend(new_page)
+        offset += limit
+
+        if len(page) < limit:
             break
 
     jobs = []
