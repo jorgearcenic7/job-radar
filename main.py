@@ -22,6 +22,7 @@ GREENHOUSE_COMPANIES = {
     "Taxbit": "taxbit",
     "Ebury": "ebury",
     "Lynx": "lynxtech",
+    "Monzo": "monzo",
 }
 
 ASHBY_COMPANIES = {
@@ -30,6 +31,7 @@ ASHBY_COMPANIES = {
     "Invopop": "invopop",
     "Airwallex": "airwallex",
     "Checkout.com": "checkout.com",
+    "Rain": "rain",
 }
 
 
