@@ -61,10 +61,11 @@ export default async function Home({
         COUNT(*)::int AS total,
         COUNT(*) FILTER (WHERE selected)::int AS selected
       FROM jobs
+      WHERE active = true
     `),
 
     db.query<{ company: string }>(
-      "SELECT DISTINCT company FROM jobs ORDER BY company"
+      "SELECT DISTINCT company FROM jobs WHERE active = true ORDER BY company"
     ),
 
     db.query<{ country: string }>(`
@@ -77,14 +78,16 @@ export default async function Home({
             ARRAY[]::text[]
           )
         ) AS c(country)
-      WHERE country <> ''
+      WHERE active = true
+        AND country <> ''
       ORDER BY country
     `),
 
     db.query<{ total: number }>(
       `SELECT COUNT(*)::int AS total
       FROM jobs
-      WHERE ($1 = '' OR strpos(lower(title), lower($1)) > 0)
+      WHERE active = true
+        AND ($1 = '' OR strpos(lower(title), lower($1)) > 0)
         AND ($2 = '' OR company = $2)
         AND (
           $3 = ''
@@ -111,7 +114,8 @@ export default async function Home({
         experience_text,
         selected
       FROM jobs
-      WHERE ($1 = '' OR strpos(lower(title), lower($1)) > 0)
+      WHERE active = true
+        AND ($1 = '' OR strpos(lower(title), lower($1)) > 0)
         AND ($2 = '' OR company = $2)
         AND (
           $3 = ''

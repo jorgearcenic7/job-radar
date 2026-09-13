@@ -4,12 +4,17 @@ CREATE TABLE IF NOT EXISTS jobs (
     company TEXT NOT NULL,
     title TEXT NOT NULL,
     location TEXT,
+    countries TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     url TEXT NOT NULL,
     description TEXT,
+    salary_text TEXT,
+    experience_text TEXT,
     selected BOOLEAN NOT NULL DEFAULT FALSE,
     match_status TEXT,
     match_reason TEXT,
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    closed_at TIMESTAMPTZ,
     PRIMARY KEY (source, source_job_id)
 );

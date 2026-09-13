@@ -22,11 +22,11 @@ Implemented:
 - Country-only filtering in the web.
 - Spain selected by default.
 - PostgreSQL upserts to avoid duplicates.
+- Safe closed-listing detection by company snapshot.
 
 Not implemented yet:
 
 - Email notifications.
-- Closed-listing detection.
 - Complete automated connector tests.
 
 ## Supported companies
@@ -45,11 +45,16 @@ Not implemented yet:
 | Taxbit | Greenhouse |
 | Ebury | Greenhouse |
 | Lynx | Greenhouse |
+| Monzo | Greenhouse |
 | Pleo | Ashby |
 | Capchase | Ashby |
 | Invopop | Ashby |
 | Airwallex | Ashby |
 | Checkout.com | Ashby |
+| Rain | Ashby |
+| Mastercard | Workday |
+| BBVA | Workday |
+| Santander | Workday |
 | Spendesk | Teamtailor |
 | Seedtag | Teamtailor |
 | Lingokids | Teamtailor |
@@ -217,7 +222,6 @@ The web displays the total number of filtered results and allows navigation betw
 ## Current limitations
 
 - No email notifications yet.
-- Closed listings are not automatically marked inactive.
 - Matching remains rule-based.
 - Not every connector has automated tests.
 - External ATS and career websites may change their APIs or HTML.
@@ -238,7 +242,7 @@ The web displays the total number of filtered results and allows navigation betw
 - [x] Country-only web filtering
 - [x] Spain selected by default
 - [ ] Automated connector tests
-- [ ] Closed-listing detection
+- [x] Closed-listing detection
 - [x] Pagination
 - [ ] Email notifications
 - [ ] More product, software and FinTech companies

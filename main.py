@@ -40,6 +40,16 @@ WORKDAY_COMPANIES = {
         "mastercard",
         "CorporateCareers",
     ),
+    "BBVA": (
+        "bbva.wd3.myworkdayjobs.com",
+        "bbva",
+        "BBVA",
+    ),
+    "Santander": (
+        "santander.wd3.myworkdayjobs.com",
+        "santander",
+        "SantanderCareers",
+    ),
 }
 
 
@@ -1853,8 +1863,31 @@ def infer_countries(location):
     return result
 
 
-def save_jobs(jobs):
+def save_jobs(jobs, company):
     import psycopg
+
+    if not jobs:
+        print(
+            f"{company}: snapshot vacío; "
+            "no se desactivarán ofertas por seguridad"
+        )
+        return 0, 0
+
+    sources = {
+        job["source"]
+        for job in jobs
+    }
+
+    if len(sources) != 1:
+        raise ValueError(
+            f"{company}: el snapshot contiene varias fuentes"
+        )
+
+    source = next(iter(sources))
+    current_ids = {
+        str(job["source_job_id"])
+        for job in jobs
+    }
 
     sql = """
         INSERT INTO jobs (
@@ -1870,11 +1903,14 @@ def save_jobs(jobs):
             experience_text,
             selected,
             match_status,
-            match_reason
+            match_reason,
+            active,
+            closed_at
         )
         VALUES (
             %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s,
+            TRUE, NULL
         )
         ON CONFLICT (source, source_job_id) DO UPDATE SET
             company = EXCLUDED.company,
@@ -1888,6 +1924,8 @@ def save_jobs(jobs):
             selected = EXCLUDED.selected,
             match_status = EXCLUDED.match_status,
             match_reason = EXCLUDED.match_reason,
+            active = TRUE,
+            closed_at = NULL,
             last_seen_at = CURRENT_TIMESTAMP
     """
 
@@ -1896,6 +1934,39 @@ def save_jobs(jobs):
         connect_timeout=10,
     ) as conn:
         with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                    active BOOLEAN NOT NULL DEFAULT TRUE
+                """
+            )
+
+            cursor.execute(
+                """
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS
+                    closed_at TIMESTAMPTZ
+                """
+            )
+
+            cursor.execute(
+                """
+                SELECT source_job_id
+                FROM jobs
+                WHERE company = %s
+                  AND source = %s
+                """,
+                (company, source),
+            )
+
+            existing_ids = {
+                row[0]
+                for row in cursor.fetchall()
+            }
+
+            new_count = len(current_ids - existing_ids)
+
             for job in jobs:
                 result = classify(job)
                 status, level, reason = result or (None, None, None)
@@ -1919,6 +1990,26 @@ def save_jobs(jobs):
                     ),
                 )
 
+            cursor.execute(
+                """
+                UPDATE jobs
+                SET active = FALSE,
+                    closed_at = CURRENT_TIMESTAMP
+                WHERE company = %s
+                  AND source = %s
+                  AND active = TRUE
+                  AND NOT (source_job_id = ANY(%s))
+                """,
+                (
+                    company,
+                    source,
+                    list(current_ids),
+                ),
+            )
+
+            closed_count = cursor.rowcount
+
+    return new_count, closed_count
 
 def process_company(company, provider, board):
     if provider == "greenhouse":
@@ -1934,13 +2025,14 @@ def process_company(company, provider, board):
     else:
         raise ValueError(f"Proveedor no soportado: {provider}")
 
-    save_jobs(jobs)
+    new_jobs, closed_jobs = save_jobs(jobs, company)
 
     selected = sum(classify(job) is not None for job in jobs)
 
     print(
         f"{company}: {len(jobs)} ofertas consultadas "
-        f"({selected} coincidencias)"
+        f"({selected} coincidencias; "
+        f"{new_jobs} nuevas; {closed_jobs} cerradas)"
     )
 
 
@@ -1995,7 +2087,7 @@ def main():
     for company, fetcher in extra_sources:
         try:
             jobs = fetcher()
-            save_jobs(jobs)
+            new_jobs, closed_jobs = save_jobs(jobs, company)
 
             selected = sum(
                 classify(job) is not None
@@ -2004,7 +2096,8 @@ def main():
 
             print(
                 f"{company}: {len(jobs)} ofertas consultadas "
-                f"({selected} coincidencias)"
+                f"({selected} coincidencias; "
+        f"{new_jobs} nuevas; {closed_jobs} cerradas)"
             )
 
         except Exception as error:
