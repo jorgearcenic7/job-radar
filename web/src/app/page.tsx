@@ -145,7 +145,7 @@ export default async function Home({
 
     if (q) query.set("q", q);
     if (company) query.set("company", company);
-    if (country) query.set("country", country);
+    query.set("country", country);
     if (selected) query.set("selected", "1");
     if (targetPage > 1) query.set("page", String(targetPage));
 
