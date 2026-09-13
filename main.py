@@ -34,6 +34,14 @@ ASHBY_COMPANIES = {
     "Rain": "rain",
 }
 
+WORKDAY_COMPANIES = {
+    "Mastercard": (
+        "mastercard.wd1.myworkdayjobs.com",
+        "mastercard",
+        "CorporateCareers",
+    ),
+}
+
 
 class TextExtractor(HTMLParser):
     def __init__(self):
@@ -750,6 +758,146 @@ def fetch_ashby(company, board):
         })
 
     return result
+
+
+def workday_relevant_title(title):
+    title = normalize(title)
+
+    return re.search(
+        r"\b(data|analytics?|etl|elt|mlops)\b"
+        r"|business intelligence"
+        r"|machine learning"
+        r"|artificial intelligence"
+        r"|software engineer"
+        r"|platform engineer"
+        r"|backend engineer",
+        title,
+    ) is not None
+
+
+def fetch_workday(company, host, tenant, site):
+    base_url = f"https://{host}/wday/cxs/{tenant}/{site}"
+    public_url = f"https://{host}/{site}"
+    limit = 20
+    offset = 0
+    postings = []
+
+    while True:
+        payload = json.dumps({
+            "appliedFacets": {},
+            "limit": limit,
+            "offset": offset,
+            "searchText": "",
+        }).encode("utf-8")
+
+        request = Request(
+            f"{base_url}/jobs",
+            data=payload,
+            headers={
+                "User-Agent": "Mozilla/5.0 Job-Radar/1.0",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urlopen(request, timeout=40) as response:
+            data = json.load(response)
+
+        page = data.get("jobPostings") or []
+
+        if not page:
+            break
+
+        postings.extend(page)
+        offset += len(page)
+
+        if offset >= int(data.get("total") or 0):
+            break
+
+    jobs = []
+    enrichment_targets = []
+
+    for posting in postings:
+        external_path = posting.get("externalPath")
+
+        if not external_path:
+            continue
+
+        job = {
+            "source": f"workday:{tenant}",
+            "source_job_id": external_path.rstrip("/").split("/")[-1],
+            "company": company,
+            "title": posting.get("title") or "",
+            "location": posting.get("locationsText"),
+            "url": f"{public_url}{external_path}",
+            "description": "",
+            "salary_text": None,
+            "experience_text": None,
+        }
+        jobs.append(job)
+
+        if workday_relevant_title(job["title"]):
+            enrichment_targets.append((job, external_path))
+
+    print(
+        f"{company}: {len(enrichment_targets)} ofertas "
+        "potencialmente técnicas para enriquecer"
+    )
+
+    def fetch_detail(target):
+        job, external_path = target
+        request = Request(
+            f"{base_url}{external_path}",
+            headers={
+                "User-Agent": "Mozilla/5.0 Job-Radar/1.0",
+                "Accept": "application/json",
+            },
+        )
+
+        with urlopen(request, timeout=40) as response:
+            detail = json.load(response)
+
+        info = detail.get("jobPostingInfo") or {}
+        description = plain_text(
+            info.get("jobDescription") or ""
+        )
+
+        return job, {
+            "location": info.get("location") or job["location"],
+            "url": info.get("externalUrl") or job["url"],
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": extract_experience(description),
+        }
+
+    enriched = 0
+    failures = 0
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(fetch_detail, target)
+            for target in enrichment_targets
+        ]
+
+        for future in as_completed(futures):
+            try:
+                job, values = future.result()
+                job.update(values)
+                enriched += 1
+
+            except Exception as error:
+                failures += 1
+                print(
+                    f"{company} detalle ERROR: "
+                    f"{type(error).__name__}: {error}"
+                )
+
+    print(
+        f"{company}: {enriched} ofertas enriquecidas "
+        f"correctamente ({failures} fallos)"
+    )
+
+    return jobs
 
 
 def schema_location(jobposting):
@@ -1759,6 +1907,10 @@ def process_company(company, provider, board):
     elif provider == "ashby":
         jobs = fetch_ashby(company, board)
 
+    elif provider == "workday":
+        host, tenant, site = board
+        jobs = fetch_workday(company, host, tenant, site)
+
     else:
         raise ValueError(f"Proveedor no soportado: {provider}")
 
@@ -1785,6 +1937,11 @@ def main():
     sources.extend(
         (company, "ashby", board)
         for company, board in ASHBY_COMPANIES.items()
+    )
+
+    sources.extend(
+        (company, "workday", config)
+        for company, config in WORKDAY_COMPANIES.items()
     )
 
     for company, provider, board in sources:
