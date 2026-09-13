@@ -1213,7 +1213,7 @@ def revolut_locations(position):
 def fetch_revolut():
     from curl_cffi import requests as curl_requests
 
-    careers_url = "https://www.revolut.com/careers/"
+    careers_url = "https://www.revolut.com/en-US/careers/"
 
     response = curl_requests.get(
         careers_url,
