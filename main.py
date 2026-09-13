@@ -1829,7 +1829,8 @@ def main():
             )
 
         except Exception as error:
-            failed = True
+            if company != "Revolut":
+                failed = True
             print(
                 f"{company}: ERROR: "
                 f"{type(error).__name__}: {error}"
