@@ -19,6 +19,7 @@ type Params = {
   company?: string | string[];
   country?: string | string[];
   selected?: string | string[];
+  page?: string | string[];
 };
 
 export default async function Home({
@@ -40,7 +41,21 @@ export default async function Home({
 
   const selected = params.selected === "1";
 
-  const [summary, companies, countries, results] = await Promise.all([
+  const requestedPage =
+    typeof params.page === "string"
+      ? Number.parseInt(params.page, 10)
+      : 1;
+
+  const page =
+    Number.isFinite(requestedPage) && requestedPage > 0
+      ? requestedPage
+      : 1;
+
+  const pageSize = 20;
+  const offset = (page - 1) * pageSize;
+
+  const [summary, companies, countries, resultCount, results] =
+    await Promise.all([
     db.query<{ total: number; selected: number }>(`
       SELECT
         COUNT(*)::int AS total,
@@ -65,6 +80,24 @@ export default async function Home({
       WHERE country <> ''
       ORDER BY country
     `),
+
+    db.query<{ total: number }>(
+      `SELECT COUNT(*)::int AS total
+      FROM jobs
+      WHERE ($1 = '' OR strpos(lower(title), lower($1)) > 0)
+        AND ($2 = '' OR company = $2)
+        AND (
+          $3 = ''
+          OR $3 = ANY(
+            COALESCE(
+              countries,
+              ARRAY[]::text[]
+            )
+          )
+        )
+        AND ($4::boolean = false OR selected = true)`,
+      [q, company, country, selected]
+    ),
 
     db.query<Job>(
       `SELECT
@@ -91,12 +124,30 @@ export default async function Home({
         )
         AND ($4::boolean = false OR selected = true)
       ORDER BY selected DESC, company, title, source_job_id
-      LIMIT 100`,
-      [q, company, country, selected]
+      LIMIT $5
+      OFFSET $6`,
+      [q, company, country, selected, pageSize, offset]
     ),
   ]);
 
   const stats = summary.rows[0];
+  const totalResults = resultCount.rows[0].total;
+  const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
+  const firstResult = totalResults === 0 ? 0 : offset + 1;
+  const lastResult = Math.min(offset + results.rows.length, totalResults);
+
+  const pageHref = (targetPage: number) => {
+    const query = new URLSearchParams();
+
+    if (q) query.set("q", q);
+    if (company) query.set("company", company);
+    if (country) query.set("country", country);
+    if (selected) query.set("selected", "1");
+    if (targetPage > 1) query.set("page", String(targetPage));
+
+    const queryString = query.toString();
+    return queryString ? `/?${queryString}` : "/";
+  };
 
   const matchRate =
     stats.total > 0
@@ -183,7 +234,9 @@ export default async function Home({
             </div>
 
             <p className="text-sm text-slate-500">
-              {results.rows.length} resultados
+              {totalResults === 0
+                ? "0 resultados"
+                : `${firstResult}-${lastResult} de ${totalResults} resultados`}
             </p>
           </div>
 
@@ -369,12 +422,49 @@ export default async function Home({
               ))}
             </div>
           )}
+
+          {totalResults > 0 && totalPages > 1 && (
+            <nav
+              className="mt-8 flex items-center justify-center gap-4"
+              aria-label="Paginación de ofertas"
+            >
+              {page > 1 ? (
+                <a
+                  href={pageHref(page - 1)}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:text-slate-950"
+                >
+                  ← Anterior
+                </a>
+              ) : (
+                <span className="cursor-not-allowed rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-300">
+                  ← Anterior
+                </span>
+              )}
+
+              <span className="text-sm text-slate-500">
+                Página {page} de {totalPages}
+              </span>
+
+              {page < totalPages ? (
+                <a
+                  href={pageHref(page + 1)}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:text-slate-950"
+                >
+                  Siguiente →
+                </a>
+              ) : (
+                <span className="cursor-not-allowed rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-300">
+                  Siguiente →
+                </span>
+              )}
+            </nav>
+          )}
         </section>
 
         <footer className="mt-14 flex flex-col justify-between gap-2 border-t border-slate-200 pt-6 text-xs text-slate-400 sm:flex-row">
           <p>Job Radar · Personal Data Engineering Job Monitor</p>
 
-          <p>Máximo 100 resultados por consulta</p>
+          <p>20 ofertas por página</p>
         </footer>
       </div>
     </main>

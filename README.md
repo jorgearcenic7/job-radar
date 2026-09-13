@@ -27,7 +27,6 @@ Not implemented yet:
 
 - Email notifications.
 - Closed-listing detection.
-- Pagination.
 - Complete automated connector tests.
 
 ## Supported companies
@@ -210,14 +209,15 @@ Current functionality includes:
 - Salary when available.
 - Experience requirement when available.
 - Direct link to the original job listing.
+- Paginated results with 20 job listings per page.
+- Filter preservation when moving between pages.
 
-Queries currently return a maximum of 100 results.
+The web displays the total number of filtered results and allows navigation between result pages.
 
 ## Current limitations
 
 - No email notifications yet.
 - Closed listings are not automatically marked inactive.
-- Pagination is not implemented.
 - Matching remains rule-based.
 - Not every connector has automated tests.
 - External ATS and career websites may change their APIs or HTML.
@@ -239,7 +239,7 @@ Queries currently return a maximum of 100 results.
 - [x] Spain selected by default
 - [ ] Automated connector tests
 - [ ] Closed-listing detection
-- [ ] Pagination
+- [x] Pagination
 - [ ] Email notifications
 - [ ] More product, software and FinTech companies
 
