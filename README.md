@@ -253,6 +253,11 @@ The web displays the total number of filtered results and allows navigation betw
 
 Database credentials, connection strings and secrets are stored in environment variables or GitHub secrets and are never committed to the repository.
 
+- Security reports: see [`SECURITY.md`](SECURITY.md).
+- Contribution and local checks: see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- Latest security review: see [`docs/security-audit-2026-09-22.md`](docs/security-audit-2026-09-22.md).
+- Copy `.env.example` and `web/.env.example` for local configuration; never reuse production credentials.
+
 ## Production
 
 https://job-radar-snowy.vercel.app

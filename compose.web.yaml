@@ -2,6 +2,10 @@ services:
   web:
     image: node:24-bookworm-slim
     user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     working_dir: /app
     command: npm run dev -- --hostname 0.0.0.0
     ports:

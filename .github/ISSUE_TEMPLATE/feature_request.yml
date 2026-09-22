@@ -1,0 +1,25 @@
+name: Propuesta de mejora
+description: Sugiere una mejora funcional o de calidad.
+title: "[Mejora]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema a resolver
+      description: Describe la necesidad, no solo la solución propuesta.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Propuesta
+      description: Explica el comportamiento deseado y sus alternativas.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impacto y riesgos
+      description: Compatibilidad, datos, seguridad, rendimiento o mantenimiento.

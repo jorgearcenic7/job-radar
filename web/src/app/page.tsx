@@ -2,6 +2,48 @@ import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
+const MAX_FILTER_LENGTH = 120;
+const MAX_PAGE = 500;
+
+function boundedParam(value: string | string[] | undefined, fallback = "") {
+  return typeof value === "string"
+    ? value.trim().slice(0, MAX_FILTER_LENGTH)
+    : fallback;
+}
+
+function safeExternalUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function JobLink({ url }: { url: string }) {
+  const safeUrl = safeExternalUrl(url);
+
+  if (!safeUrl) {
+    return (
+      <span className="job-link cursor-not-allowed opacity-50">
+        Enlace no disponible
+      </span>
+    );
+  }
+
+  return (
+    <a
+      href={safeUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="job-link"
+    >
+      Ver oferta
+      <span aria-hidden="true">↗</span>
+    </a>
+  );
+}
+
 type Job = {
   source: string;
   source_job_id: string;
@@ -29,15 +71,9 @@ export default async function Home({
 }) {
   const params = await searchParams;
 
-  const q = typeof params.q === "string" ? params.q.trim() : "";
-
-  const company =
-    typeof params.company === "string" ? params.company : "";
-
-  const country =
-    typeof params.country === "string"
-      ? params.country.trim()
-      : "Spain";
+  const q = boundedParam(params.q);
+  const company = boundedParam(params.company);
+  const country = boundedParam(params.country, "Spain");
 
   const selected = params.selected === "1";
 
@@ -48,7 +84,7 @@ export default async function Home({
 
   const page =
     Number.isFinite(requestedPage) && requestedPage > 0
-      ? requestedPage
+      ? Math.min(requestedPage, MAX_PAGE)
       : 1;
 
   const pageSize = 20;
@@ -413,15 +449,7 @@ export default async function Home({
                     )}
                   </div>
 
-                  <a
-                    href={job.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="job-link"
-                  >
-                    Ver oferta
-                    <span aria-hidden="true">↗</span>
-                  </a>
+                  <JobLink url={job.url} />
                 </article>
               ))}
             </div>

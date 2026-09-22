@@ -1,0 +1,10 @@
+# The repository owner reviews all changes by default.
+* @jorgearcenic7
+
+# Security-sensitive surfaces require the same explicit owner review.
+/.github/ @jorgearcenic7
+/SECURITY.md @jorgearcenic7
+/Dockerfile @jorgearcenic7
+/requirements*.txt @jorgearcenic7
+/web/package*.json @jorgearcenic7
+/web/src/lib/ @jorgearcenic7

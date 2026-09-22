@@ -1,0 +1,49 @@
+name: Informe de error
+description: Comunica un fallo reproducible que no sea una vulnerabilidad.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Para vulnerabilidades, no continúes aquí: usa el reporte privado enlazado en SECURITY.md.
+  - type: textarea
+    id: description
+    attributes:
+      label: Descripción
+      description: Explica qué ocurrió y qué esperabas que ocurriera.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Pasos para reproducir
+      placeholder: |
+        1. Ejecuta...
+        2. Abre...
+        3. Observa...
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Entorno
+      description: Commit, navegador, sistema operativo o versión de Python/Node.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs relevantes
+      description: Elimina antes credenciales, URLs privadas y datos personales.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Comprobaciones
+      options:
+        - label: He comprobado que no estoy publicando secretos ni datos personales.
+          required: true
+        - label: Este informe no describe una vulnerabilidad de seguridad.
+          required: true
