@@ -103,21 +103,29 @@ def fetch_text(url):
 
 def extract_salary(description):
     patterns = [
-        r"(?:€|\$|£)\s?\d{2,3}(?:[.,]\d{3})*(?:\s?[kK])?"
-        r"\s*(?:-|–|—|to)\s*"
-        r"(?:€|\$|£)?\s?\d{2,3}(?:[.,]\d{3})*(?:\s?[kK])?"
-        r"(?:\s*(?:EUR|USD|GBP))?",
+        (
+            r"(?:€|\$|£)\s?\d{2,3}(?:[.,]\d{3})*(?:\s?[kK])?"
+            + r"\s*(?:-|–|—|to)\s*"
+            + r"(?:€|\$|£)?\s?\d{2,3}(?:[.,]\d{3})*(?:\s?[kK])?"
+            + r"(?:\s*(?:EUR|USD|GBP))?"
+        ),
 
-        r"\b\d{2,3}(?:[.,]\d{3})+\s*(?:EUR|USD|GBP)"
-        r"\s*(?:-|–|—|to)\s*"
-        r"\d{2,3}(?:[.,]\d{3})+\s*(?:EUR|USD|GBP)?\b",
+        (
+            r"\b\d{2,3}(?:[.,]\d{3})+\s*(?:EUR|USD|GBP)"
+            + r"\s*(?:-|–|—|to)\s*"
+            + r"\d{2,3}(?:[.,]\d{3})+\s*(?:EUR|USD|GBP)?\b"
+        ),
 
-        r"\b\d{2,3}\s?[kK]\s*(?:-|–|—|to)\s*"
-        r"\d{2,3}\s?[kK]\s*(?:EUR|USD|GBP)\b",
+        (
+            r"\b\d{2,3}\s?[kK]\s*(?:-|–|—|to)\s*"
+            + r"\d{2,3}\s?[kK]\s*(?:EUR|USD|GBP)\b"
+        ),
 
-        r"(?:€|\$|£)\s?\d{2,3}(?:[.,]\d{3})+"
-        r"(?:\s*(?:EUR|USD|GBP))?"
-        r"(?:\s*(?:per year|annually|a year|/year))?",
+        (
+            r"(?:€|\$|£)\s?\d{2,3}(?:[.,]\d{3})+"
+            + r"(?:\s*(?:EUR|USD|GBP))?"
+            + r"(?:\s*(?:per year|annually|a year|/year))?"
+        ),
     ]
 
     for pattern in patterns:
@@ -131,18 +139,24 @@ def extract_salary(description):
 
 def extract_experience(description):
     patterns = [
-        r"\b(?:at least|minimum(?: of)?|min\.?)?\s*"
-        r"\d{1,2}\+?\s+years?\s+(?:of\s+)?"
-        r"(?:relevant\s+|professional\s+|hands-on\s+|industry\s+)?"
-        r"experience\b",
+        (
+            r"\b(?:at least|minimum(?: of)?|min\.?)?\s*"
+            + r"\d{1,2}\+?\s+years?\s+(?:of\s+)?"
+            + r"(?:relevant\s+|professional\s+|hands-on\s+|industry\s+)?"
+            + r"experience\b"
+        ),
 
-        r"\b\d{1,2}\s*(?:-|–|—|to)\s*\d{1,2}\s+years?"
-        r"\s+(?:of\s+)?(?:relevant\s+|professional\s+)?experience\b",
+        (
+            r"\b\d{1,2}\s*(?:-|–|—|to)\s*\d{1,2}\s+years?"
+            + r"\s+(?:of\s+)?(?:relevant\s+|professional\s+)?experience\b"
+        ),
 
         r"\b\d{1,2}\+?\s+years['’]?\s+experience\b",
 
-        r"\b(?:mínimo|minimo|al menos)?\s*"
-        r"\d{1,2}\+?\s+años?\s+de\s+experiencia\b",
+        (
+            r"\b(?:mínimo|minimo|al menos)?\s*"
+            + r"\d{1,2}\+?\s+años?\s+de\s+experiencia\b"
+        ),
     ]
 
     for pattern in patterns:
@@ -173,25 +187,33 @@ def required_experience_years(experience_text):
 
     patterns = [
         # at least 3 years / minimum of 3 years
-        r"\b(?:at least|minimum(?: of)?|min\.?)\s*"
-        r"(\d{1,2})\+?\s*(?:years?|yrs?)\b",
+        (
+            r"\b(?:at least|minimum(?: of)?|min\.?)\s*"
+            + r"(\d{1,2})\+?\s*(?:years?|yrs?)\b"
+        ),
 
         # 3-5 years / 3 to 5 years
-        r"\b(\d{1,2})\s*(?:-|–|—|to)\s*"
-        r"\d{1,2}\s*(?:years?|yrs?)\b",
+        (
+            r"\b(\d{1,2})\s*(?:-|–|—|to)\s*"
+            + r"\d{1,2}\s*(?:years?|yrs?)\b"
+        ),
 
         # 7+ years
         r"\b(\d{1,2})\+\s*(?:years?|yrs?)\b",
 
         # 2 years of experience
-        r"\b(\d{1,2})\s*(?:years?|yrs?)\s+"
-        r"(?:of\s+)?"
-        r"(?:relevant\s+|professional\s+|hands-on\s+|industry\s+)?"
-        r"experience\b",
+        (
+            r"\b(\d{1,2})\s*(?:years?|yrs?)\s+"
+            + r"(?:of\s+)?"
+            + r"(?:relevant\s+|professional\s+|hands-on\s+|industry\s+)?"
+            + r"experience\b"
+        ),
 
         # español
-        r"\b(?:mínimo|minimo|al menos)?\s*"
-        r"(\d{1,2})\+?\s*años?\s+de\s+experiencia\b",
+        (
+            r"\b(?:mínimo|minimo|al menos)?\s*"
+            + r"(\d{1,2})\+?\s*años?\s+de\s+experiencia\b"
+        ),
     ]
 
     for pattern in patterns:
@@ -399,21 +421,15 @@ def classify(job):
     # =========================================================
 
     strong_data_signals = [
-        r"\bdata pipelines?\b"
-        r"|\bpipelines?\s+de\s+datos\b",
+        r"\bdata pipelines?\b" + r"|\bpipelines?\s+de\s+datos\b",
 
-        r"\b(?:etl|elt)\b"
-        r"|extract.{0,30}transform.{0,30}load",
+        r"\b(?:etl|elt)\b" + r"|extract.{0,30}transform.{0,30}load",
 
-        r"\bdata ingestion\b"
-        r"|\bingesta de datos\b",
+        r"\bdata ingestion\b" + r"|\bingesta de datos\b",
 
-        r"\bdata warehouse\b"
-        r"|\bdata lake\b"
-        r"|\blakehouse\b",
+        r"\bdata warehouse\b" + r"|\bdata lake\b" + r"|\blakehouse\b",
 
-        r"\bdata model(?:ing|ling)\b"
-        r"|\bmodelado de datos\b",
+        r"\bdata model(?:ing|ling)\b" + r"|\bmodelado de datos\b",
 
         r"\b(?:batch|stream) processing\b",
 
@@ -423,8 +439,7 @@ def classify(job):
 
         r"\b(?:kafka|event streaming)\b",
 
-        r"\b(?:snowflake|bigquery|redshift|"
-        r"microsoft fabric)\b",
+        r"\b(?:snowflake|bigquery|redshift|" + r"microsoft fabric)\b",
     ]
 
     strong_data_count = sum(
