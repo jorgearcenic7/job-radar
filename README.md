@@ -13,7 +13,7 @@ aplicación web permite buscar y filtrar únicamente las oportunidades activas.
 ## Funcionalidades
 
 - Ingesta automática diaria a las **06:00 (Europe/Madrid)** con GitHub Actions.
-- 30 empresas integradas mediante Greenhouse, Ashby, Workday y otras fuentes.
+- 39 empresas integradas mediante Greenhouse, Ashby, Workday y otras fuentes.
 - Matching basado en puesto, seniority, experiencia requerida y señales
   técnicas.
 - Etiquetas **Buena coincidencia** y **Stretch** para las ofertas seleccionadas.
@@ -48,12 +48,15 @@ el servidor.
 | Fuente | Empresas |
 | --- | --- |
 | Greenhouse | Typeform, N26, Datadog, Clarity AI, Fever, Cabify, Aircall, Auctane, Celonis, Taxbit, Ebury, Lynx, Monzo |
-| Ashby | Pleo, Capchase, Invopop, Airwallex, Checkout.com, Rain |
-| Workday | Mastercard, BBVA, Santander |
+| Ashby | Pleo, Capchase, Invopop, Airwallex, Checkout.com, Rain, Lovable |
+| Workday | Mastercard, BBVA, Santander, Amadeus, AVEVA |
+| SuccessFactors | SAP, Hexagon |
+| SmartRecruiters | IFS |
 | Teamtailor | Spendesk, Seedtag, Lingokids |
 | Comeet | ThetaRay |
 | iCIMS | Mambu |
-| Portales propios | CaixaBank Tech, Deel, Revolut |
+| Sage People | Sage |
+| Portales propios | CaixaBank Tech, Dassault Systèmes, Deel, Revolut, Visma |
 
 La disponibilidad cambia continuamente, por lo que una empresa compatible
 puede no tener ofertas activas en un momento determinado.

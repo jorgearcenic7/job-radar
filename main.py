@@ -5,9 +5,15 @@ import unicodedata
 from datetime import datetime, timezone
 from html import escape, unescape
 from html.parser import HTMLParser
+from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlencode, urlsplit
+from urllib.request import (
+    HTTPCookieProcessor,
+    Request,
+    build_opener,
+    urlopen,
+)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -34,6 +40,7 @@ ASHBY_COMPANIES = {
     "Airwallex": "airwallex",
     "Checkout.com": "checkout.com",
     "Rain": "rain",
+    "Lovable": "lovable",
 }
 
 WORKDAY_COMPANIES = {
@@ -51,6 +58,33 @@ WORKDAY_COMPANIES = {
         "santander.wd3.myworkdayjobs.com",
         "santander",
         "SantanderCareers",
+    ),
+    "Amadeus": (
+        "amadeus.wd502.myworkdayjobs.com",
+        "amadeus",
+        "jobs",
+    ),
+    "AVEVA": (
+        "aveva.wd3.myworkdayjobs.com",
+        "aveva",
+        "AVEVA_careers",
+    ),
+}
+
+SMARTRECRUITERS_COMPANIES = {
+    "IFS": "IFS1",
+}
+
+SUCCESSFACTORS_COMPANIES = {
+    "SAP": (
+        "career5.successfactors.eu",
+        "SAP",
+        "https://jobs.sap.com/search/?q={job_id}",
+    ),
+    "Hexagon": (
+        "career74.sapsf.eu",
+        "HexagonGlobP",
+        "https://careers.hexagon.com/job/{slug}/{job_id}-en_US/",
     ),
 }
 
@@ -946,6 +980,544 @@ def fetch_workday(company, host, tenant, site):
         f"{company}: {enriched} ofertas enriquecidas "
         f"correctamente ({failures} fallos)"
     )
+
+    return jobs
+
+
+def fetch_smartrecruiters(company, identifier):
+    base_url = (
+        "https://api.smartrecruiters.com/v1/companies/"
+        f"{identifier}/postings"
+    )
+    limit = 100
+    offset = 0
+    postings = []
+
+    while True:
+        data = fetch_json(
+            f"{base_url}?{urlencode({'limit': limit, 'offset': offset})}"
+        )
+        page = data.get("content") or []
+
+        if not page:
+            break
+
+        postings.extend(page)
+        offset += len(page)
+
+        if offset >= data.get("totalFound", offset):
+            break
+
+    jobs = []
+    enrichment_targets = []
+
+    for posting in postings:
+        job_id = str(posting.get("id") or "")
+
+        if not job_id:
+            continue
+
+        location_data = posting.get("location") or {}
+        job = {
+            "source": f"smartrecruiters:{identifier.casefold()}",
+            "source_job_id": job_id,
+            "company": company,
+            "title": posting.get("name") or "",
+            "location": location_data.get("fullLocation"),
+            "url": f"https://jobs.smartrecruiters.com/{identifier}/{job_id}",
+            "description": "",
+            "salary_text": None,
+            "experience_text": None,
+        }
+        jobs.append(job)
+
+        if workday_relevant_title(job["title"]):
+            enrichment_targets.append(job)
+
+    print(
+        f"{company}: {len(enrichment_targets)} ofertas "
+        "potencialmente técnicas para enriquecer"
+    )
+
+    def fetch_detail(job):
+        detail = fetch_json(f"{base_url}/{job['source_job_id']}")
+        sections = (detail.get("jobAd") or {}).get("sections") or {}
+        html_parts = []
+
+        for section in sections.values():
+            if isinstance(section, dict) and section.get("text"):
+                html_parts.append(section["text"])
+
+        description = plain_text(" ".join(html_parts))
+
+        return job, {
+            "url": detail.get("postingUrl") or job["url"],
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": extract_experience(description),
+        }
+
+    enriched = 0
+    failures = 0
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(fetch_detail, job)
+            for job in enrichment_targets
+        ]
+
+        for future in as_completed(futures):
+            try:
+                job, values = future.result()
+                job.update(values)
+                enriched += 1
+            except Exception as error:
+                failures += 1
+                print(
+                    f"{company} detalle ERROR: "
+                    f"{type(error).__name__}: {error}"
+                )
+
+    print(
+        f"{company}: {enriched} ofertas enriquecidas "
+        f"correctamente ({failures} fallos)"
+    )
+
+    return jobs
+
+
+def successfactors_value(block, field):
+    match = re.search(
+        rf"<{re.escape(field)}>(.*?)</{re.escape(field)}>",
+        block,
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    if not match:
+        return ""
+
+    value = match.group(1).strip()
+
+    if value.startswith("<![CDATA[") and value.endswith("]]>"):
+        value = value[9:-3]
+
+    return unescape(value).strip()
+
+
+def successfactors_slug(title):
+    value = unicodedata.normalize("NFKD", title or "")
+    value = value.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^A-Za-z0-9]+", "-", value).strip("-") or "job"
+
+
+def fetch_successfactors(company, host, identifier, url_template):
+    url = (
+        f"https://{host}/career?"
+        + urlencode({
+            "company": identifier,
+            "career_ns": "job_listing_summary",
+            "resultType": "XML",
+        })
+    )
+    page = fetch_text(url)
+    blocks = re.findall(
+        r"<Job>(.*?)</Job>",
+        page,
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    if not blocks:
+        raise ValueError(f"{company}: no jobs found in SuccessFactors feed")
+
+    jobs = []
+
+    for block in blocks:
+        job_id = plain_text(successfactors_value(block, "ReqId"))
+        title = plain_text(successfactors_value(block, "JobTitle"))
+
+        if not job_id or not title:
+            continue
+
+        description = plain_text(
+            successfactors_value(block, "Job-Description")
+        )
+        metadata = {}
+
+        for field in re.findall(
+            r"<(?:filter|mfield)\d+>(.*?)</(?:filter|mfield)\d+>",
+            block,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            label = plain_text(successfactors_value(field, "label"))
+            value = plain_text(successfactors_value(field, "value"))
+
+            if label and value:
+                metadata[label.casefold()] = value
+
+        location_parts = []
+
+        for key in (
+            "internal posting location",
+            "job location (region)",
+            "job location (country/region)",
+            "country",
+        ):
+            value = metadata.get(key)
+
+            if value and value not in location_parts:
+                location_parts.append(value)
+
+        job_url = url_template.format(
+            job_id=quote(job_id),
+            slug=quote(successfactors_slug(title)),
+        )
+
+        jobs.append({
+            "source": f"successfactors:{identifier.casefold()}",
+            "source_job_id": job_id,
+            "company": company,
+            "title": title,
+            "location": ", ".join(location_parts) or None,
+            "url": job_url,
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": extract_experience(description),
+        })
+
+    return jobs
+
+
+def fetch_dassault_systemes():
+    endpoint = "https://www.3ds.com/apisearch/card_search_api"
+    limit = 100
+    offset = 0
+    hits = []
+    query = '#all card_content_lang:en  (card_content_type="career") '
+
+    while True:
+        url = endpoint + "?" + urlencode({
+            "q": query,
+            "s": "desc(card_content_start_datetime)",
+            "b": offset,
+            "hf": limit,
+            "output_format": "json",
+        })
+        data = fetch_json(url)
+        page = data.get("hits") or []
+
+        if not page:
+            break
+
+        hits.extend(page)
+        offset += len(page)
+
+        if offset >= data.get("nhits", offset):
+            break
+
+    result = []
+
+    for hit in hits:
+        metadata = {
+            item.get("name"): item.get("value")
+            for item in hit.get("metas") or []
+            if item.get("name")
+        }
+        job_id = str(metadata.get("card_id") or "")
+        job_url = (
+            metadata.get("content_cta_1_url")
+            or metadata.get("content_cta_1_url_id")
+        )
+
+        if not job_id or not job_url:
+            continue
+
+        description = plain_text(metadata.get("content_summary") or "")
+
+        result.append({
+            "source": "dassault:careers",
+            "source_job_id": job_id,
+            "company": "Dassault Systèmes",
+            "title": metadata.get("content_title") or "",
+            "location": metadata.get("content_info_2_value"),
+            "url": job_url,
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": extract_experience(description),
+        })
+
+    return result
+
+
+def fetch_visma():
+    page = fetch_text("https://www.visma.com/careers/open-positions")
+    blocks = re.split(
+        r'(?=<div role="listitem" class="openposition-list-item)',
+        page,
+    )[1:]
+    result = []
+    seen_ids = set()
+
+    for block in blocks:
+        title_match = re.search(r'data-job-title="([^"]+)"', block)
+        url_match = re.search(r'<a[^>]+href="([^"]+)"', block)
+
+        if not title_match or not url_match:
+            continue
+
+        title = unescape(title_match.group(1)).strip()
+        job_url = unescape(url_match.group(1)).strip()
+        parsed_url = urlsplit(job_url)
+        job_id = f"{parsed_url.netloc}{parsed_url.path}".rstrip("/")
+
+        if not job_id or job_id in seen_ids:
+            continue
+
+        seen_ids.add(job_id)
+
+        country_match = re.search(
+            r'fs-cmssort-field="countries"[^>]*>(.*?)</div>',
+            block,
+            re.IGNORECASE | re.DOTALL,
+        )
+        city_match = re.search(
+            r'class="text-size-small text-wrap line-break '
+            r'no-gap w-embed">(.*?)</div>',
+            block,
+            re.IGNORECASE | re.DOTALL,
+        )
+        area_match = re.search(
+            r'fs-cmssort-field="areasofwork"[^>]*>(.*?)</div>',
+            block,
+            re.IGNORECASE | re.DOTALL,
+        )
+        tags_match = re.search(
+            r'fs-cmssort-field="tags"[^>]*>(.*?)</div>',
+            block,
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        location_parts = []
+
+        for match in (country_match, city_match):
+            value = plain_text(match.group(1)) if match else ""
+            value = value.strip(" |")
+
+            if value and value not in location_parts:
+                location_parts.append(value)
+
+        description = " ".join(
+            value
+            for value in (
+                plain_text(area_match.group(1)) if area_match else "",
+                plain_text(tags_match.group(1)) if tags_match else "",
+            )
+            if value
+        )
+
+        result.append({
+            "source": "visma:careers",
+            "source_job_id": job_id,
+            "company": "Visma",
+            "title": title,
+            "location": ", ".join(location_parts) or None,
+            "url": job_url,
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": extract_experience(description),
+        })
+
+    if not result:
+        raise ValueError("Visma: no jobs found")
+
+    return result
+
+
+class HiddenInputParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.values = {}
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+
+        if (
+            tag == "input"
+            and values.get("type") == "hidden"
+            and values.get("name")
+        ):
+            self.values[values["name"]] = values.get("value", "")
+
+
+def sage_listing_rows(page):
+    rows = []
+
+    for row in re.findall(
+        r'<tr class="[^"]*dataRow[^"]*"[^>]*>(.*?)</tr>',
+        page,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        link = re.search(
+            r'href="(/careers/fRecruit__ApplyJob\?'
+            r'vacancyNo=(VN\d+)&(?:amp;)?portal=English)">([^<]+)</a>',
+            row,
+            re.IGNORECASE,
+        )
+
+        if not link:
+            continue
+
+        cells = re.findall(
+            r'<td[^>]*>(.*?)</td>',
+            row,
+            re.IGNORECASE | re.DOTALL,
+        )
+        rows.append({
+            "id": link.group(2),
+            "title": unescape(link.group(3)).strip(),
+            "country": plain_text(cells[3]) if len(cells) > 3 else "",
+            "office": plain_text(cells[4]) if len(cells) > 4 else "",
+        })
+
+    return rows
+
+
+def fetch_sage():
+    base_url = "https://sagehr.my.salesforce-sites.com"
+    list_path = "/careers/fRecruit__ApplyJobList"
+    opener = build_opener(HTTPCookieProcessor(CookieJar()))
+    request = Request(
+        f"{base_url}{list_path}?portal=English",
+        headers={"User-Agent": "Mozilla/5.0 Job-Radar/1.0"},
+    )
+
+    with opener.open(request, timeout=40) as response:
+        page = response.read().decode("utf-8", errors="ignore")
+
+    postings = []
+    page_signatures = set()
+
+    for _page_number in range(100):
+        rows = sage_listing_rows(page)
+        signature = tuple(row["id"] for row in rows)
+
+        if not rows:
+            raise ValueError("Sage: no jobs found")
+
+        if signature in page_signatures:
+            raise ValueError("Sage: repeated page while paginating")
+
+        page_signatures.add(signature)
+        postings.extend(rows)
+
+        next_anchor = re.search(
+            r'<a href="#" onclick="([^"]+)" '
+            r'class="link-pagination">Next</a>',
+            page,
+            re.IGNORECASE,
+        )
+
+        if not next_anchor:
+            break
+
+        next_values = re.search(
+            r"jsfcljs\([^,]+,'([^,]+),([^']+)'",
+            next_anchor.group(1),
+        )
+        form = re.search(
+            r'<form id="([^"]+)"[^>]+'
+            r'action="/careers/fRecruit__ApplyJobList"',
+            page,
+            re.IGNORECASE,
+        )
+
+        if not next_values or not form:
+            raise ValueError("Sage: invalid pagination form")
+
+        parser = HiddenInputParser()
+        parser.feed(page)
+        fields = parser.values
+        fields[form.group(1)] = form.group(1)
+        fields[next_values.group(1)] = next_values.group(2)
+        request = Request(
+            f"{base_url}{list_path}",
+            data=urlencode(fields).encode("utf-8"),
+            headers={
+                "User-Agent": "Mozilla/5.0 Job-Radar/1.0",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+
+        with opener.open(request, timeout=40) as response:
+            page = response.read().decode("utf-8", errors="ignore")
+    else:
+        raise ValueError("Sage: pagination limit reached")
+
+    jobs = []
+    enrichment_targets = []
+
+    for posting in postings:
+        job_url = (
+            f"{base_url}/careers/fRecruit__ApplyJob?"
+            + urlencode({
+                "vacancyNo": posting["id"],
+                "portal": "English",
+            })
+        )
+        location = ", ".join(
+            value
+            for value in (posting["office"], posting["country"])
+            if value and value != "\xa0"
+        )
+        job = {
+            "source": "sagepeople:sage",
+            "source_job_id": posting["id"],
+            "company": "Sage",
+            "title": posting["title"],
+            "location": location or None,
+            "url": job_url,
+            "description": "",
+            "salary_text": None,
+            "experience_text": None,
+        }
+        jobs.append(job)
+
+        if workday_relevant_title(job["title"]):
+            enrichment_targets.append(job)
+
+    def fetch_detail(job):
+        page = fetch_text(job["url"])
+        schema = extract_jobposting_jsonld(page)
+
+        if not schema:
+            raise ValueError("JobPosting JSON-LD not found")
+
+        description = plain_text(schema.get("description") or "")
+
+        return job, {
+            "location": schema_location(schema) or job["location"],
+            "description": description,
+            "salary_text": (
+                schema_salary(schema)
+                or extract_salary(description)
+            ),
+            "experience_text": extract_experience(description),
+        }
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(fetch_detail, job)
+            for job in enrichment_targets
+        ]
+
+        for future in as_completed(futures):
+            try:
+                job, values = future.result()
+                job.update(values)
+            except Exception as error:
+                print(
+                    "Sage detalle ERROR: "
+                    f"{type(error).__name__}: {error}"
+                )
 
     return jobs
 
@@ -2403,6 +2975,18 @@ def process_company(company, provider, board):
         host, tenant, site = board
         jobs = fetch_workday(company, host, tenant, site)
 
+    elif provider == "smartrecruiters":
+        jobs = fetch_smartrecruiters(company, board)
+
+    elif provider == "successfactors":
+        host, identifier, url_template = board
+        jobs = fetch_successfactors(
+            company,
+            host,
+            identifier,
+            url_template,
+        )
+
     else:
         raise ValueError(f"Proveedor no soportado: {provider}")
 
@@ -2437,6 +3021,16 @@ def main():
         for company, config in WORKDAY_COMPANIES.items()
     )
 
+    sources.extend(
+        (company, "smartrecruiters", identifier)
+        for company, identifier in SMARTRECRUITERS_COMPANIES.items()
+    )
+
+    sources.extend(
+        (company, "successfactors", config)
+        for company, config in SUCCESSFACTORS_COMPANIES.items()
+    )
+
     for company, provider, board in sources:
         try:
             process_company(company, provider, board)
@@ -2464,6 +3058,9 @@ def main():
         ("Lingokids", fetch_lingokids),
         ("Revolut", fetch_revolut),
         ("CaixaBank Tech", fetch_caixabank_tech),
+        ("Dassault Systèmes", fetch_dassault_systemes),
+        ("Visma", fetch_visma),
+        ("Sage", fetch_sage),
     ]
 
     for company, fetcher in extra_sources:
