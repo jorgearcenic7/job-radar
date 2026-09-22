@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -91,6 +92,87 @@ class MatchingTests(unittest.TestCase):
         )
         self.assertIsNone(result)
 
+
+class EmailNotificationTests(unittest.TestCase):
+    def make_match(self):
+        return {
+            "company": "Example & Co",
+            "title": "Data Engineer <Junior>",
+            "location": "Madrid, Spain",
+            "url": "https://example.com/jobs/123?from=radar&level=1",
+            "salary_text": "€40k - €50k",
+            "experience_text": "2 years of experience",
+            "match_status": "Buena coincidencia",
+        }
+
+    def test_email_content_escapes_data_and_includes_plain_text(self):
+        subject, html, text = main.build_match_email([self.make_match()])
+
+        self.assertIn("1 coincidencia", subject)
+        self.assertIn("Example &amp; Co", html)
+        self.assertIn("Data Engineer &lt;Junior&gt;", html)
+        self.assertNotIn("Data Engineer <Junior>", html)
+        self.assertIn("Example & Co", text)
+        self.assertIn("https://example.com/jobs/123", text)
+
+    def test_email_rejects_non_https_job_links(self):
+        match = self.make_match()
+        match["url"] = "javascript:alert(1)"
+
+        _subject, html, text = main.build_match_email([match])
+
+        self.assertNotIn("javascript:", html)
+        self.assertNotIn("javascript:", text)
+        self.assertIn("Enlace no disponible", html)
+
+    @patch("main.get_active_matches")
+    @patch("main.urlopen")
+    def test_send_notification_uses_resend_and_idempotency(
+        self,
+        urlopen,
+        get_active_matches,
+    ):
+        get_active_matches.return_value = [self.make_match()]
+        urlopen.return_value = JsonResponse({"id": "email-123"})
+        environment = {
+            "RESEND_API_KEY": "re_test",
+            "NOTIFICATION_EMAIL": "recipient@example.com",
+            "NOTIFICATION_FROM": "Job Radar <jobs@example.com>",
+            "NOTIFICATION_RUN_ID": "run-123",
+        }
+
+        with patch.dict(os.environ, environment, clear=False):
+            with redirect_stdout(io.StringIO()):
+                result = main.send_match_notification()
+
+        self.assertEqual(result, "email-123")
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data)
+        headers = {
+            name.casefold(): value
+            for name, value in request.header_items()
+        }
+
+        self.assertEqual(request.full_url, main.RESEND_EMAILS_URL)
+        self.assertEqual(payload["to"], ["recipient@example.com"])
+        self.assertEqual(
+            payload["from"],
+            "Job Radar <jobs@example.com>",
+        )
+        self.assertEqual(headers["authorization"], "Bearer re_test")
+        self.assertEqual(headers["idempotency-key"], "job-radar/run-123")
+
+    @patch("main.get_active_matches")
+    def test_notification_is_disabled_without_api_key(
+        self,
+        get_active_matches,
+    ):
+        with patch.dict(os.environ, {"RESEND_API_KEY": ""}, clear=False):
+            with redirect_stdout(io.StringIO()):
+                result = main.send_match_notification()
+
+        self.assertIsNone(result)
+        get_active_matches.assert_not_called()
 
 class GreenhouseTests(unittest.TestCase):
     @patch("main.fetch_json")
