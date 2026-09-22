@@ -92,7 +92,9 @@ Tras fusionar y subir este cambio:
 6. Revisa cualquier alerta inicial antes de permitir merges automáticos de
    Dependabot.
 7. En Neon crea un rol de solo lectura para la aplicación web y configura con él
-   `DATABASE_URL` en Vercel; reserva la credencial de escritura para el secret
+   `WEB_DATABASE_URL` como secreto en Vercel. La aplicación exige esta variable
+   en Vercel para no utilizar por accidente la `DATABASE_URL` de escritura que
+   administra la integración; reserva la credencial de escritura para el secret
    de ingesta de GitHub Actions.
 
 ## Verificación realizada
