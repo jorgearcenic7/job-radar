@@ -32,9 +32,18 @@ jobs:
       - name: Run pipeline
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NOTIFICATION_EMAIL: ${{ secrets.NOTIFICATION_EMAIL }}
+          NOTIFICATION_FROM: ${{ secrets.NOTIFICATION_FROM }}
+          NOTIFICATION_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "DATABASE_URL secret is not configured"
+            exit 1
+          fi
+
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$NOTIFICATION_EMAIL" ]; then
+            echo "RESEND_API_KEY and NOTIFICATION_EMAIL secrets are required"
             exit 1
           fi
 
@@ -44,4 +53,8 @@ jobs:
             --cap-drop ALL \
             --security-opt no-new-privileges \
             -e DATABASE_URL \
+            -e RESEND_API_KEY \
+            -e NOTIFICATION_EMAIL \
+            -e NOTIFICATION_FROM \
+            -e NOTIFICATION_RUN_ID \
             job-radar-pipeline
