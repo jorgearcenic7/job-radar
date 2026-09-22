@@ -303,5 +303,181 @@ class WorkdayTests(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 2)
 
 
+class NewCompanyConfigurationTests(unittest.TestCase):
+    def test_requested_companies_are_configured(self):
+        self.assertIn("Celonis", main.GREENHOUSE_COMPANIES)
+        self.assertIn("Lovable", main.ASHBY_COMPANIES)
+        self.assertIn("Amadeus", main.WORKDAY_COMPANIES)
+        self.assertIn("AVEVA", main.WORKDAY_COMPANIES)
+        self.assertIn("IFS", main.SMARTRECRUITERS_COMPANIES)
+        self.assertIn("SAP", main.SUCCESSFACTORS_COMPANIES)
+        self.assertIn("Hexagon", main.SUCCESSFACTORS_COMPANIES)
+
+
+class SmartRecruitersTests(unittest.TestCase):
+    @patch("main.fetch_json")
+    def test_listing_and_relevant_job_enrichment(self, fetch_json):
+        fetch_json.side_effect = [
+            {
+                "totalFound": 2,
+                "content": [
+                    {
+                        "id": "123",
+                        "name": "Data Engineer",
+                        "location": {"fullLocation": "Madrid, Spain"},
+                    },
+                    {
+                        "id": "456",
+                        "name": "Account Executive",
+                        "location": {"fullLocation": "London, UK"},
+                    },
+                ],
+            },
+            {
+                "postingUrl": "https://jobs.example.com/123",
+                "jobAd": {
+                    "sections": {
+                        "jobDescription": {
+                            "text": "<p>Build data pipelines.</p>"
+                        },
+                        "qualifications": {
+                            "text": "<p>2 years of experience.</p>"
+                        },
+                    }
+                },
+            },
+        ]
+
+        with redirect_stdout(io.StringIO()):
+            jobs = main.fetch_smartrecruiters("IFS", "IFS1")
+
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(jobs[0]["source"], "smartrecruiters:ifs1")
+        self.assertEqual(jobs[0]["url"], "https://jobs.example.com/123")
+        self.assertEqual(
+            jobs[0]["experience_text"],
+            "2 years of experience",
+        )
+        self.assertEqual(jobs[1]["description"], "")
+
+
+class SuccessFactorsTests(unittest.TestCase):
+    @patch("main.fetch_text")
+    def test_successfactors_mapping(self, fetch_text):
+        fetch_text.return_value = """
+            <Job-Listing>
+              <Job>
+                <JobTitle><![CDATA[Data Engineer II]]></JobTitle>
+                <Job-Description><![CDATA[
+                  <p>Build pipelines.</p><p>2 years of experience.</p>
+                ]]></Job-Description>
+                <ReqId>123</ReqId>
+                <filter7><label>Country</label><value>Spain</value></filter7>
+                <filter8>
+                  <label>Internal Posting Location</label>
+                  <value>Madrid</value>
+                </filter8>
+              </Job>
+            </Job-Listing>
+        """
+
+        jobs = main.fetch_successfactors(
+            "SAP",
+            "career.example.com",
+            "SAP",
+            "https://jobs.example.com/search?q={job_id}&slug={slug}",
+        )
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["source"], "successfactors:sap")
+        self.assertEqual(jobs[0]["source_job_id"], "123")
+        self.assertEqual(jobs[0]["location"], "Madrid, Spain")
+        self.assertIn("slug=Data-Engineer-II", jobs[0]["url"])
+        self.assertEqual(
+            jobs[0]["experience_text"],
+            "2 years of experience",
+        )
+
+
+class DassaultTests(unittest.TestCase):
+    @patch("main.fetch_json")
+    def test_dassault_mapping(self, fetch_json):
+        fetch_json.return_value = {
+            "nhits": 1,
+            "hits": [{
+                "metas": [
+                    {"name": "card_id", "value": "549001"},
+                    {"name": "content_title", "value": "Data Engineer"},
+                    {
+                        "name": "content_info_2_value",
+                        "value": "Spain, Barcelona",
+                    },
+                    {
+                        "name": "content_cta_1_url",
+                        "value": "https://www.3ds.com/careers/jobs/549001",
+                    },
+                    {
+                        "name": "content_summary",
+                        "value": "<p>Build Python data pipelines.</p>",
+                    },
+                ]
+            }],
+        }
+
+        jobs = main.fetch_dassault_systemes()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["source"], "dassault:careers")
+        self.assertEqual(jobs[0]["company"], "Dassault Systèmes")
+        self.assertEqual(jobs[0]["description"], "Build Python data pipelines.")
+
+
+class VismaTests(unittest.TestCase):
+    @patch("main.fetch_text")
+    def test_visma_mapping(self, fetch_text):
+        fetch_text.return_value = """
+          <div role="listitem" class="openposition-list-item w-dyn-item">
+            <div data-job-title="Data Engineer">
+              <a href="https://jobs.example.com/123">Data Engineer</a>
+              <div fs-cmssort-field="countries">Spain</div>
+              <div class="text-size-small text-wrap line-break no-gap w-embed">
+                &nbsp;|&nbsp;Madrid
+              </div>
+              <div fs-cmssort-field="areasofwork">Data Science</div>
+              <div fs-cmssort-field="tags">Python, SQL</div>
+            </div>
+          </div>
+        """
+
+        jobs = main.fetch_visma()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["source"], "visma:careers")
+        self.assertEqual(jobs[0]["location"], "Spain, Madrid")
+        self.assertEqual(jobs[0]["description"], "Data Science Python, SQL")
+
+
+class SageTests(unittest.TestCase):
+    def test_sage_listing_rows(self):
+        page = """
+          <tr class="dataRow even">
+            <td><span>VN123</span></td>
+            <td><a href="/careers/fRecruit__ApplyJob?vacancyNo=VN123&amp;portal=English">Data Engineer</a></td>
+            <td>Engineering</td>
+            <td><span>Spain</span></td>
+            <td><span>Barcelona</span></td>
+          </tr>
+        """
+
+        rows = main.sage_listing_rows(page)
+
+        self.assertEqual(rows, [{
+            "id": "VN123",
+            "title": "Data Engineer",
+            "country": "Spain",
+            "office": "Barcelona",
+        }])
+
+
 if __name__ == "__main__":
     unittest.main()
