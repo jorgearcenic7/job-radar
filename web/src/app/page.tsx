@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -353,9 +354,9 @@ export default async function Home({
             </button>
 
             {(q || company || country !== "Spain" || selected) && (
-              <a href="/" className="clear-link">
+              <Link href="/" className="clear-link">
                 Limpiar
-              </a>
+              </Link>
             )}
           </form>
 

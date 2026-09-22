@@ -25,6 +25,7 @@ en CI para repetir el análisis con bases de vulnerabilidades actualizadas.
 | Baja | El contenedor del pipeline se ejecutaba como `root` y sin restricciones adicionales. | Corregido: usuario sin privilegios UID 10001, filesystem de solo lectura, capacidades eliminadas y `no-new-privileges`. |
 | Baja | Dos dependencias Python directas no estaban fijadas, permitiendo cambios inesperados entre builds. | Corregido: versiones directas exactas y actualizaciones por Dependabot. |
 | Baja | Los workflows usaban referencias móviles antiguas y conservaban credenciales de checkout sin necesitarlas. | Corregido: acciones fijadas por SHA y `persist-credentials: false`. |
+| Baja | CodeQL señaló 17 concatenaciones implícitas intencionadas dentro de listas de expresiones regulares. | Corregido: concatenación explícita con `+`, sin alterar los patrones. |
 | Informativa | Existe un identificador público de board de Comeet en `main.py`. Puede parecer un token, pero forma parte de una API pública de ofertas. | Aceptado; no concede acceso administrativo según el uso revisado. |
 | Informativa | No puede verificarse desde el repositorio si la credencial PostgreSQL de Vercel tiene permisos de escritura. | Pendiente operativo: usar un rol exclusivo con `SELECT` sobre `jobs`. |
 
@@ -77,8 +78,8 @@ en CI para repetir el análisis con bases de vulnerabilidades actualizadas.
 Los ficheros del repositorio no pueden activar todos los controles de cuenta.
 Tras fusionar y subir este cambio:
 
-1. En **Settings → Security and quality**, activa **Dependabot alerts** y
-   **Dependabot security updates**.
+1. En **Settings → Security and quality**, activa primero **Dependency graph**
+   y después **Dependabot alerts** y **Dependabot security updates**.
 2. Activa **Private vulnerability reporting** para que funcione el canal de
    `SECURITY.md`.
 3. Confirma que el workflow **CodeQL** termina correctamente. No actives a la
@@ -92,7 +93,9 @@ Tras fusionar y subir este cambio:
 6. Revisa cualquier alerta inicial antes de permitir merges automáticos de
    Dependabot.
 7. En Neon crea un rol de solo lectura para la aplicación web y configura con él
-   `DATABASE_URL` en Vercel; reserva la credencial de escritura para el secret
+   `WEB_DATABASE_URL` como secreto en Vercel. La aplicación exige esta variable
+   en Vercel para no utilizar por accidente la `DATABASE_URL` de escritura que
+   administra la integración; reserva la credencial de escritura para el secret
    de ingesta de GitHub Actions.
 
 ## Verificación realizada

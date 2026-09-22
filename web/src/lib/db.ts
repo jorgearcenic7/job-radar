@@ -1,8 +1,16 @@
 import "server-only";
 import { Pool } from "pg";
 
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL is not configured");
+const connectionString =
+  process.env.WEB_DATABASE_URL ??
+  (process.env.VERCEL === "1" ? undefined : process.env.DATABASE_URL);
+
+if (!connectionString) {
+  throw new Error(
+    process.env.VERCEL === "1"
+      ? "WEB_DATABASE_URL is not configured"
+      : "WEB_DATABASE_URL or DATABASE_URL is not configured",
+  );
 }
 
 const globalForDb = globalThis as unknown as {
@@ -12,7 +20,7 @@ const globalForDb = globalThis as unknown as {
 export const db =
   globalForDb.jobRadarPool ??
   new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString,
     max: 5,
     connectionTimeoutMillis: 10000,
     idleTimeoutMillis: 30000,
