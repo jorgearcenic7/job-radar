@@ -14,7 +14,8 @@ aplicación web permite buscar y filtrar únicamente las oportunidades activas.
 
 - Ingesta automática en días alternos a las **06:00 (Europe/Madrid)** con
   GitHub Actions.
-- 39 empresas integradas mediante Greenhouse, Ashby, Workday y otras fuentes.
+- 57 integraciones empresariales mediante Greenhouse, Ashby, Workday y otras
+  fuentes.
 - Matching basado en puesto, seniority, experiencia requerida y señales
   técnicas.
 - Etiquetas **Buena coincidencia** y **Stretch** para las ofertas seleccionadas.
@@ -36,7 +37,7 @@ flowchart LR
     B --> C[Normalización y matching]
     C --> D[(PostgreSQL / Neon)]
     D --> E[Next.js en Vercel]
-    F[GitHub Actions] -->|Ejecución diaria| B
+    F[GitHub Actions] -->|Ejecución en días alternos| B
 ```
 
 El pipeline conserva la descripción y la ubicación publicadas, calcula los
@@ -48,16 +49,20 @@ el servidor.
 
 | Fuente | Empresas |
 | --- | --- |
-| Greenhouse | Typeform, N26, Datadog, Clarity AI, Fever, Cabify, Aircall, Auctane, Celonis, Taxbit, Ebury, Lynx, Monzo |
-| Ashby | Pleo, Capchase, Invopop, Airwallex, Checkout.com, Rain, Lovable |
+| Greenhouse | Typeform, N26, Stripe, Adyen, Block (incluye Afterpay), Chime, Nubank, Robinhood, SoFi, Coinbase, Datadog, Clarity AI, Fever, Cabify, Aircall, Auctane, Celonis, Taxbit, Ebury, Lynx, Monzo |
+| Ashby | Pleo, Plaid, Qonto, Mollie, Capchase, Invopop, Airwallex, Checkout.com, Rain, Lovable |
 | Workday | Mastercard, BBVA, Santander, Amadeus, AVEVA |
 | SuccessFactors | SAP, Hexagon |
-| SmartRecruiters | IFS |
+| SmartRecruiters | IFS, Wise, Grab / Grab Financial Group |
+| Lever | Paytm |
+| Deel Jobs | Deel, Klarna |
+| BambooHR | Flutterwave |
+| Eightfold | PayPal |
 | Teamtailor | Spendesk, Seedtag, Lingokids |
 | Comeet | ThetaRay |
 | iCIMS | Mambu |
 | Sage People | Sage |
-| Portales propios | CaixaBank Tech, Dassault Systèmes, Deel, Revolut, Visma |
+| Portales propios | Ant Group / Ant International, CaixaBank Tech, Dassault Systèmes, Revolut, Visma |
 
 La disponibilidad cambia continuamente, por lo que una empresa compatible
 puede no tener ofertas activas en un momento determinado.

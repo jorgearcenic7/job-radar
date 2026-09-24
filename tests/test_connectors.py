@@ -283,6 +283,190 @@ class AshbyTests(unittest.TestCase):
         self.assertEqual(jobs[0]["salary_text"], "€45k - €55k")
 
 
+class LeverTests(unittest.TestCase):
+    @patch("main.fetch_json")
+    def test_lever_mapping(self, fetch_json):
+        fetch_json.return_value = [{
+            "id": "paytm-123",
+            "text": "Data Engineer",
+            "hostedUrl": "https://jobs.lever.co/paytm/paytm-123",
+            "descriptionPlain": "Build data pipelines.",
+            "additionalPlain": "2 years of experience.",
+            "lists": [{"content": "<p>Python and SQL</p>"}],
+            "categories": {
+                "location": "Noida",
+                "allLocations": ["Noida", "Bengaluru"],
+            },
+            "salaryRange": {
+                "min": 100000,
+                "max": 150000,
+                "currency": "INR",
+                "interval": "per-year-salary",
+            },
+        }]
+
+        jobs = main.fetch_lever("Paytm", "paytm")
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["source"], "lever:paytm")
+        self.assertEqual(jobs[0]["location"], "Noida; Bengaluru")
+        self.assertEqual(
+            jobs[0]["salary_text"],
+            "100000 – 150000 INR / per year salary",
+        )
+        self.assertEqual(
+            jobs[0]["experience_text"],
+            "2 years of experience",
+        )
+
+
+class BambooHRTests(unittest.TestCase):
+    @patch("main.fetch_json")
+    def test_bamboohr_mapping(self, fetch_json):
+        fetch_json.return_value = {
+            "result": [{
+                "id": "1383",
+                "jobOpeningName": "Analytics Engineer",
+                "departmentLabel": "Data",
+                "employmentStatusLabel": "Full-Time",
+                "location": {
+                    "city": "Lekki",
+                    "state": "Lagos",
+                    "country": "Nigeria",
+                },
+            }]
+        }
+
+        jobs = main.fetch_bamboohr("Flutterwave", "flutterwavego")
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(
+            jobs[0]["source"],
+            "bamboohr:flutterwavego",
+        )
+        self.assertEqual(jobs[0]["location"], "Lekki, Lagos, Nigeria")
+        self.assertEqual(
+            jobs[0]["url"],
+            "https://flutterwavego.bamboohr.com/careers/1383",
+        )
+
+
+class EightfoldTests(unittest.TestCase):
+    @patch("main.fetch_json")
+    def test_listing_and_relevant_job_enrichment(self, fetch_json):
+        fetch_json.side_effect = [
+            {
+                "data": {
+                    "count": 2,
+                    "positions": [
+                        {
+                            "id": 123,
+                            "name": "Data Engineer",
+                            "locations": ["Madrid, Spain"],
+                            "positionUrl": "/careers/job/123",
+                        },
+                        {
+                            "id": 456,
+                            "name": "Account Executive",
+                            "locations": ["London, UK"],
+                            "positionUrl": "/careers/job/456",
+                        },
+                    ],
+                }
+            },
+            {
+                "data": {
+                    "locations": ["Madrid, Spain"],
+                    "jobDescription": (
+                        "<p>Build data pipelines.</p>"
+                        "<p>2 years of experience.</p>"
+                    ),
+                }
+            },
+        ]
+
+        with redirect_stdout(io.StringIO()):
+            jobs = main.fetch_eightfold(
+                "PayPal",
+                "paypal.eightfold.ai",
+                "paypal.com",
+            )
+
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(jobs[0]["source"], "eightfold:paypal.com")
+        self.assertEqual(
+            jobs[0]["experience_text"],
+            "2 years of experience",
+        )
+        self.assertEqual(jobs[1]["description"], "")
+
+
+class DeelBoardTests(unittest.TestCase):
+    @patch("main.fetch_text")
+    def test_company_board_mapping(self, fetch_text):
+        job_id = "161d3133-1185-405b-a037-0f5aa14ee60b"
+        fetch_text.side_effect = [
+            f'<a href="/klarna/job-details/{job_id}/overview">Role</a>',
+            """
+                <script type="application/ld+json">
+                {
+                  "@type": "JobPosting",
+                  "title": "Data Engineer",
+                  "description": "Build pipelines with Python.",
+                  "jobLocation": {
+                    "address": {
+                      "addressLocality": "Stockholm",
+                      "addressCountry": "Sweden"
+                    }
+                  }
+                }
+                </script>
+            """,
+        ]
+
+        jobs = main.fetch_deel_company("Klarna", "klarna")
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["source"], "deel:klarna")
+        self.assertEqual(jobs[0]["company"], "Klarna")
+        self.assertEqual(jobs[0]["location"], "Stockholm, Sweden")
+
+
+class AntGroupTests(unittest.TestCase):
+    @patch("main.urlopen")
+    def test_ant_group_mapping(self, urlopen):
+        urlopen.return_value = JsonResponse({
+            "success": True,
+            "content": [{
+                "id": 123,
+                "name": "Applied AI Engineer",
+                "workLocations": ["Kuala Lumpur"],
+                "description": "Build production data pipelines.",
+                "requirement": "At least 3 years of experience.",
+                "experience": {"from": 3, "to": None},
+            }],
+            "totalCount": 1,
+            "pageSize": 10,
+            "currentPage": 1,
+        })
+
+        jobs = main.fetch_ant_group()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["source"], "ant:careers")
+        self.assertEqual(
+            jobs[0]["company"],
+            "Ant Group / Ant International",
+        )
+        self.assertEqual(jobs[0]["location"], "Kuala Lumpur")
+        self.assertEqual(
+            jobs[0]["experience_text"],
+            "At least 3 years of experience",
+        )
+        request = urlopen.call_args.args[0]
+        self.assertEqual(json.loads(request.data)["bgCode"], "M7892")
+
+
 class WorkdayTests(unittest.TestCase):
     def test_relevant_title_filter(self):
         self.assertTrue(
@@ -350,6 +534,29 @@ class NewCompanyConfigurationTests(unittest.TestCase):
         self.assertIn("IFS", main.SMARTRECRUITERS_COMPANIES)
         self.assertIn("SAP", main.SUCCESSFACTORS_COMPANIES)
         self.assertIn("Hexagon", main.SUCCESSFACTORS_COMPANIES)
+        self.assertEqual(main.GREENHOUSE_COMPANIES["Stripe"], "stripe")
+        self.assertEqual(main.GREENHOUSE_COMPANIES["Adyen"], "adyen")
+        self.assertEqual(
+            main.GREENHOUSE_COMPANIES["Block (incl. Afterpay)"],
+            "block",
+        )
+        self.assertIn("Chime", main.GREENHOUSE_COMPANIES)
+        self.assertIn("Nubank", main.GREENHOUSE_COMPANIES)
+        self.assertIn("Robinhood", main.GREENHOUSE_COMPANIES)
+        self.assertIn("SoFi", main.GREENHOUSE_COMPANIES)
+        self.assertIn("Coinbase", main.GREENHOUSE_COMPANIES)
+        self.assertIn("Plaid", main.ASHBY_COMPANIES)
+        self.assertIn("Qonto", main.ASHBY_COMPANIES)
+        self.assertIn("Mollie", main.ASHBY_COMPANIES)
+        self.assertIn("Wise", main.SMARTRECRUITERS_COMPANIES)
+        self.assertIn(
+            "Grab / Grab Financial Group",
+            main.SMARTRECRUITERS_COMPANIES,
+        )
+        self.assertIn("Paytm", main.LEVER_COMPANIES)
+        self.assertIn("Klarna", main.DEEL_COMPANIES)
+        self.assertIn("Flutterwave", main.BAMBOOHR_COMPANIES)
+        self.assertIn("PayPal", main.EIGHTFOLD_COMPANIES)
 
 
 class SmartRecruitersTests(unittest.TestCase):
