@@ -132,7 +132,9 @@ python main.py
 ```
 
 La ejecución consulta servicios externos y guarda el snapshot actual de cada
-empresa. Para ejecutar únicamente la ingesta y PostgreSQL con Docker:
+empresa. El log muestra el tiempo total de ingesta de cada fuente, incluida la
+consulta y la escritura en base de datos, también cuando una fuente falla. Para
+ejecutar únicamente la ingesta y PostgreSQL con Docker:
 
 ```bash
 docker compose up -d db
