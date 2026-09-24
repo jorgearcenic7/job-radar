@@ -12,7 +12,8 @@ aplicación web permite buscar y filtrar únicamente las oportunidades activas.
 
 ## Funcionalidades
 
-- Ingesta automática diaria a las **06:00 (Europe/Madrid)** con GitHub Actions.
+- Ingesta automática en días alternos a las **06:00 (Europe/Madrid)** con
+  GitHub Actions.
 - 39 empresas integradas mediante Greenhouse, Ashby, Workday y otras fuentes.
 - Matching basado en puesto, seniority, experiencia requerida y señales
   técnicas.
