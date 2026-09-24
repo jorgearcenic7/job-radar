@@ -22,6 +22,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 GREENHOUSE_COMPANIES = {
     "Typeform": "typeform",
     "N26": "n26",
+    "Stripe": "stripe",
+    "Adyen": "adyen",
+    "Block (incl. Afterpay)": "block",
+    "Chime": "chime",
+    "Nubank": "nubank",
+    "Robinhood": "robinhood",
+    "SoFi": "sofi",
+    "Coinbase": "coinbase",
     "Datadog": "datadog",
     "Clarity AI": "clarityai",
     "Fever": "feverup",
@@ -37,6 +45,9 @@ GREENHOUSE_COMPANIES = {
 
 ASHBY_COMPANIES = {
     "Pleo": "pleo",
+    "Plaid": "plaid",
+    "Qonto": "qonto",
+    "Mollie": "mollie",
     "Capchase": "capchase",
     "Invopop": "invopop",
     "Airwallex": "airwallex",
@@ -75,6 +86,24 @@ WORKDAY_COMPANIES = {
 
 SMARTRECRUITERS_COMPANIES = {
     "IFS": "IFS1",
+    "Wise": "Wise",
+    "Grab / Grab Financial Group": "Grab",
+}
+
+LEVER_COMPANIES = {
+    "Paytm": "paytm",
+}
+
+DEEL_COMPANIES = {
+    "Klarna": "klarna",
+}
+
+BAMBOOHR_COMPANIES = {
+    "Flutterwave": "flutterwavego",
+}
+
+EIGHTFOLD_COMPANIES = {
+    "PayPal": ("paypal.eightfold.ai", "paypal.com"),
 }
 
 SUCCESSFACTORS_COMPANIES = {
@@ -838,6 +867,265 @@ def fetch_ashby(company, board):
         })
 
     return result
+
+
+def lever_salary(salary_range):
+    if not isinstance(salary_range, dict):
+        return None
+
+    minimum = salary_range.get("min")
+    maximum = salary_range.get("max")
+
+    if minimum is None and maximum is None:
+        return None
+
+    if minimum is not None and maximum is not None:
+        result = f"{minimum} – {maximum}"
+    else:
+        result = str(minimum if minimum is not None else maximum)
+
+    currency = salary_range.get("currency")
+    interval = salary_range.get("interval")
+
+    if currency:
+        result += f" {currency}"
+
+    if interval:
+        result += f" / {str(interval).replace('-', ' ')}"
+
+    return result
+
+
+def fetch_lever(company, site):
+    data = fetch_json(
+        "https://api.lever.co/v0/postings/"
+        f"{site}?mode=json"
+    )
+    result = []
+
+    for posting in data:
+        job_id = str(posting.get("id") or "").strip()
+        job_url = posting.get("hostedUrl") or posting.get("applyUrl")
+
+        if not job_id or not job_url:
+            continue
+
+        description_parts = [posting.get("descriptionPlain") or ""]
+
+        for section in posting.get("lists") or []:
+            if isinstance(section, dict):
+                description_parts.append(
+                    plain_text(section.get("content") or "")
+                )
+
+        description_parts.append(posting.get("additionalPlain") or "")
+        description = re.sub(
+            r"\s+",
+            " ",
+            " ".join(part for part in description_parts if part),
+        ).strip()
+        categories = posting.get("categories") or {}
+        locations = categories.get("allLocations") or []
+
+        if isinstance(locations, str):
+            locations = [locations]
+
+        location = "; ".join(
+            str(value).strip()
+            for value in locations
+            if str(value).strip()
+        )
+
+        if not location:
+            location = categories.get("location")
+
+        result.append({
+            "source": f"lever:{site}",
+            "source_job_id": job_id,
+            "company": company,
+            "title": posting.get("text") or "Untitled",
+            "location": location or None,
+            "url": job_url,
+            "description": description,
+            "salary_text": (
+                lever_salary(posting.get("salaryRange"))
+                or extract_salary(description)
+            ),
+            "experience_text": extract_experience(description),
+        })
+
+    return result
+
+
+def bamboohr_location(posting):
+    location = posting.get("location") or posting.get("atsLocation") or {}
+
+    if isinstance(location, str):
+        return location.strip() or None
+
+    if not isinstance(location, dict):
+        return None
+
+    values = []
+
+    for key in ("city", "state", "country"):
+        value = str(location.get(key) or "").strip()
+
+        if value and value not in values:
+            values.append(value)
+
+    return ", ".join(values) or None
+
+
+def fetch_bamboohr(company, subdomain):
+    base_url = f"https://{subdomain}.bamboohr.com/careers"
+    data = fetch_json(f"{base_url}/list")
+    result = []
+
+    for posting in data.get("result") or []:
+        job_id = str(posting.get("id") or "").strip()
+        title = str(posting.get("jobOpeningName") or "").strip()
+
+        if not job_id or not title:
+            continue
+
+        description = " ".join(
+            str(value).strip()
+            for value in (
+                posting.get("departmentLabel"),
+                posting.get("employmentStatusLabel"),
+                posting.get("employmentType"),
+            )
+            if value
+        )
+
+        result.append({
+            "source": f"bamboohr:{subdomain}",
+            "source_job_id": job_id,
+            "company": company,
+            "title": title,
+            "location": bamboohr_location(posting),
+            "url": f"{base_url}/{job_id}",
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": extract_experience(description),
+        })
+
+    return result
+
+
+def fetch_eightfold(company, host, domain):
+    base_url = f"https://{host}"
+    start = 0
+    postings = []
+    seen_ids = set()
+
+    while True:
+        query = urlencode({
+            "domain": domain,
+            "query": "",
+            "location": "",
+            "start": start,
+        })
+        payload = fetch_json(f"{base_url}/api/pcsx/search?{query}")
+        data = payload.get("data") or {}
+        page = data.get("positions") or []
+
+        if not page:
+            break
+
+        for posting in page:
+            job_id = str(posting.get("id") or "").strip()
+
+            if job_id and job_id not in seen_ids:
+                seen_ids.add(job_id)
+                postings.append(posting)
+
+        start += len(page)
+
+        if start >= data.get("count", start):
+            break
+
+    jobs = []
+    enrichment_targets = []
+
+    for posting in postings:
+        job_id = str(posting["id"])
+        position_url = posting.get("positionUrl")
+
+        if not position_url:
+            position_url = f"/careers/job/{job_id}"
+
+        job = {
+            "source": f"eightfold:{domain}",
+            "source_job_id": job_id,
+            "company": company,
+            "title": posting.get("name") or "Untitled",
+            "location": "; ".join(posting.get("locations") or []) or None,
+            "url": f"{base_url}{position_url}?domain={quote(domain)}",
+            "description": "",
+            "salary_text": None,
+            "experience_text": None,
+        }
+        jobs.append(job)
+
+        if workday_relevant_title(job["title"]):
+            enrichment_targets.append(job)
+
+    print(
+        f"{company}: {len(enrichment_targets)} ofertas "
+        "potencialmente técnicas para enriquecer"
+    )
+
+    def fetch_detail(job):
+        query = urlencode({
+            "position_id": job["source_job_id"],
+            "domain": domain,
+            "hl": "en",
+        })
+        payload = fetch_json(
+            f"{base_url}/api/pcsx/position_details?{query}"
+        )
+        detail = payload.get("data") or {}
+        description = plain_text(detail.get("jobDescription") or "")
+
+        return job, {
+            "location": (
+                "; ".join(detail.get("locations") or [])
+                or job["location"]
+            ),
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": extract_experience(description),
+        }
+
+    enriched = 0
+    failures = 0
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(fetch_detail, job)
+            for job in enrichment_targets
+        ]
+
+        for future in as_completed(futures):
+            try:
+                job, values = future.result()
+                job.update(values)
+                enriched += 1
+            except Exception as error:
+                failures += 1
+                print(
+                    f"{company} detalle ERROR: "
+                    f"{type(error).__name__}: {error}"
+                )
+
+    print(
+        f"{company}: {enriched} ofertas enriquecidas "
+        f"correctamente ({failures} fallos)"
+    )
+
+    return jobs
 
 
 def workday_relevant_title(title):
@@ -1757,9 +2045,9 @@ def fetch_thetaray():
     return result
 
 
-def fetch_deel_job(job_id):
+def fetch_deel_job(job_id, company="Deel", board="deel"):
     url = (
-        "https://jobs.deel.com/deel/job-details/"
+        f"https://jobs.deel.com/{board}/job-details/"
         f"{job_id}/overview"
     )
 
@@ -1772,9 +2060,13 @@ def fetch_deel_job(job_id):
     description = plain_text(schema.get("description") or "")
 
     return {
-        "source": "deel:careers",
+        "source": (
+            "deel:careers"
+            if company == "Deel" and board == "deel"
+            else f"deel:{board}"
+        ),
         "source_job_id": job_id,
-        "company": "Deel",
+        "company": company,
         "title": schema.get("title") or "Untitled",
         "location": schema_location(schema),
         "url": url,
@@ -1785,6 +2077,56 @@ def fetch_deel_job(job_id):
         ),
         "experience_text": extract_experience(description),
     }
+
+
+def fetch_deel_company(company, board):
+    page = fetch_text(f"https://jobs.deel.com/{board}")
+    ids = sorted(set(
+        re.findall(
+            rf"/{re.escape(board)}/job-details/"
+            r"([0-9a-fA-F-]{36})",
+            page,
+        )
+    ))
+
+    if not ids:
+        raise ValueError(f"{company}: no job IDs found")
+
+    result = []
+    failures = 0
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {
+            executor.submit(
+                fetch_deel_job,
+                job_id,
+                company,
+                board,
+            ): job_id
+            for job_id in ids
+        }
+
+        for future in as_completed(futures):
+            try:
+                job = future.result()
+
+                if job:
+                    result.append(job)
+            except Exception:
+                failures += 1
+
+    if not result:
+        raise ValueError(
+            f"{company}: no jobs parsed ({failures} failures)"
+        )
+
+    if failures:
+        print(
+            f"{company}: aviso, {failures} páginas "
+            "individuales no pudieron leerse"
+        )
+
+    return result
 
 
 def fetch_deel():
@@ -1829,6 +2171,127 @@ def fetch_deel():
             f"Deel: aviso, {failures} páginas "
             "individuales no pudieron leerse"
         )
+
+    return result
+
+
+def ant_experience(posting, description):
+    extracted = extract_experience(description)
+
+    if extracted:
+        return extracted
+
+    experience = posting.get("experience") or {}
+
+    if not isinstance(experience, dict):
+        return None
+
+    minimum = experience.get("from")
+    maximum = experience.get("to")
+
+    if minimum is None:
+        return None
+
+    if maximum is not None:
+        return f"{minimum}-{maximum} years of experience"
+
+    return f"{minimum}+ years of experience"
+
+
+def fetch_ant_group():
+    url = (
+        "https://hrcareersweb.antgroup.com/"
+        "api/social/position/search"
+    )
+    page_index = 1
+    page_size = 10
+    postings = []
+
+    while True:
+        payload = json.dumps({
+            "language": "en",
+            "channel": "group_official_site",
+            "categories": "",
+            "key": "",
+            "regions": "",
+            "subCategories": "",
+            "pageIndex": page_index,
+            "pageSize": page_size,
+            "bgCode": "M7892",
+        }).encode("utf-8")
+        request = Request(
+            url,
+            data=payload,
+            headers={
+                "User-Agent": "Mozilla/5.0 Job-Radar/1.0",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Origin": "https://www.ant-intl.com",
+                "Referer": "https://www.ant-intl.com/",
+            },
+            method="POST",
+        )
+
+        with urlopen(request, timeout=40) as response:
+            data = json.load(response)
+
+        if not data.get("success"):
+            raise ValueError(
+                "Ant Group: "
+                + str(data.get("errorMsg") or "invalid response")
+            )
+
+        page = data.get("content") or []
+
+        if not page:
+            break
+
+        postings.extend(page)
+
+        if len(postings) >= data.get("totalCount", len(postings)):
+            break
+
+        page_index += 1
+
+    result = []
+
+    for posting in postings:
+        job_id = str(posting.get("id") or "").strip()
+        title = str(posting.get("name") or "").strip()
+
+        if not job_id or not title:
+            continue
+
+        description = plain_text(
+            " ".join(
+                value
+                for value in (
+                    posting.get("description"),
+                    posting.get("requirement"),
+                )
+                if value
+            )
+        )
+
+        result.append({
+            "source": "ant:careers",
+            "source_job_id": job_id,
+            "company": "Ant Group / Ant International",
+            "title": title,
+            "location": "; ".join(
+                posting.get("workLocations") or []
+            ) or None,
+            "url": (
+                "https://talent.antgroup.com/off-campus-position?"
+                + urlencode({
+                    "positionId": job_id,
+                    "locale": "US",
+                })
+            ),
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": ant_experience(posting, description),
+        })
 
     return result
 
@@ -2994,6 +3457,19 @@ def process_company(company, provider, board):
     elif provider == "smartrecruiters":
         jobs = fetch_smartrecruiters(company, board)
 
+    elif provider == "lever":
+        jobs = fetch_lever(company, board)
+
+    elif provider == "deel":
+        jobs = fetch_deel_company(company, board)
+
+    elif provider == "bamboohr":
+        jobs = fetch_bamboohr(company, board)
+
+    elif provider == "eightfold":
+        host, domain = board
+        jobs = fetch_eightfold(company, host, domain)
+
     elif provider == "successfactors":
         host, identifier, url_template = board
         jobs = fetch_successfactors(
@@ -3043,6 +3519,26 @@ def main():
     )
 
     sources.extend(
+        (company, "lever", site)
+        for company, site in LEVER_COMPANIES.items()
+    )
+
+    sources.extend(
+        (company, "deel", board)
+        for company, board in DEEL_COMPANIES.items()
+    )
+
+    sources.extend(
+        (company, "bamboohr", subdomain)
+        for company, subdomain in BAMBOOHR_COMPANIES.items()
+    )
+
+    sources.extend(
+        (company, "eightfold", config)
+        for company, config in EIGHTFOLD_COMPANIES.items()
+    )
+
+    sources.extend(
         (company, "successfactors", config)
         for company, config in SUCCESSFACTORS_COMPANIES.items()
     )
@@ -3067,6 +3563,11 @@ def main():
                 )
 
     extra_sources = [
+        (
+            "Ant Group / Ant International",
+            "portal propio",
+            fetch_ant_group,
+        ),
         ("Spendesk", "teamtailor", fetch_spendesk),
         ("ThetaRay", "comeet", fetch_thetaray),
         ("Deel", "portal propio", fetch_deel),
