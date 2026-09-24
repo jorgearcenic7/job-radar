@@ -1,7 +1,9 @@
 import json
 import os
 import re
+import time
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from html import escape, unescape
 from html.parser import HTMLParser
@@ -90,6 +92,20 @@ SUCCESSFACTORS_COMPANIES = {
 
 RESEND_EMAILS_URL = "https://api.resend.com/emails"
 DEFAULT_NOTIFICATION_FROM = "Job Radar <onboarding@resend.dev>"
+
+
+@contextmanager
+def report_ingestion_time(company, source):
+    started_at = time.perf_counter()
+
+    try:
+        yield
+    finally:
+        elapsed_seconds = time.perf_counter() - started_at
+        print(
+            f"{company}: tiempo de ingesta ({source}): "
+            f"{elapsed_seconds:.2f} s"
+        )
 
 
 class TextExtractor(HTMLParser):
@@ -3032,61 +3048,63 @@ def main():
     )
 
     for company, provider, board in sources:
-        try:
-            process_company(company, provider, board)
+        with report_ingestion_time(company, provider):
+            try:
+                process_company(company, provider, board)
 
-        except (
-            HTTPError,
-            URLError,
-            TimeoutError,
-            KeyError,
-            ValueError,
-            TypeError,
-        ) as error:
-            failed = True
-            print(
-                f"{company}: ERROR ({provider}): "
-                f"{type(error).__name__}: {error}"
-            )
+            except (
+                HTTPError,
+                URLError,
+                TimeoutError,
+                KeyError,
+                ValueError,
+                TypeError,
+            ) as error:
+                failed = True
+                print(
+                    f"{company}: ERROR ({provider}): "
+                    f"{type(error).__name__}: {error}"
+                )
 
     extra_sources = [
-        ("Spendesk", fetch_spendesk),
-        ("ThetaRay", fetch_thetaray),
-        ("Deel", fetch_deel),
-        ("Mambu", fetch_mambu),
-        ("Seedtag", fetch_seedtag),
-        ("Lingokids", fetch_lingokids),
-        ("Revolut", fetch_revolut),
-        ("CaixaBank Tech", fetch_caixabank_tech),
-        ("Dassault Systèmes", fetch_dassault_systemes),
-        ("Visma", fetch_visma),
-        ("Sage", fetch_sage),
+        ("Spendesk", "teamtailor", fetch_spendesk),
+        ("ThetaRay", "comeet", fetch_thetaray),
+        ("Deel", "portal propio", fetch_deel),
+        ("Mambu", "icims", fetch_mambu),
+        ("Seedtag", "teamtailor", fetch_seedtag),
+        ("Lingokids", "teamtailor", fetch_lingokids),
+        ("Revolut", "portal propio", fetch_revolut),
+        ("CaixaBank Tech", "portal propio", fetch_caixabank_tech),
+        ("Dassault Systèmes", "portal propio", fetch_dassault_systemes),
+        ("Visma", "portal propio", fetch_visma),
+        ("Sage", "sagepeople", fetch_sage),
     ]
 
-    for company, fetcher in extra_sources:
-        try:
-            jobs = fetcher()
-            new_jobs, closed_jobs = save_jobs(jobs, company)
+    for company, source, fetcher in extra_sources:
+        with report_ingestion_time(company, source):
+            try:
+                jobs = fetcher()
+                new_jobs, closed_jobs = save_jobs(jobs, company)
 
-            selected = sum(
-                classify(job) is not None
-                for job in jobs
-            )
+                selected = sum(
+                    classify(job) is not None
+                    for job in jobs
+                )
 
-            print(
-                f"{company}: {len(jobs)} ofertas consultadas "
-                f"({selected} coincidencias; "
-                f"{new_jobs} nuevas; "
-                f"{closed_jobs} cerradas)"
-            )
+                print(
+                    f"{company}: {len(jobs)} ofertas consultadas "
+                    f"({selected} coincidencias; "
+                    f"{new_jobs} nuevas; "
+                    f"{closed_jobs} cerradas)"
+                )
 
-        except Exception as error:
-            if company != "Revolut":
-                failed = True
-            print(
-                f"{company}: ERROR: "
-                f"{type(error).__name__}: {error}"
-            )
+            except Exception as error:
+                if company != "Revolut":
+                    failed = True
+                print(
+                    f"{company}: ERROR: "
+                    f"{type(error).__name__}: {error}"
+                )
 
     try:
         send_match_notification(partial=failed)

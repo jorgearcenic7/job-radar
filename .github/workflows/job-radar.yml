@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "0 6 */2 * *"
       timezone: "Europe/Madrid"
 
 permissions:
@@ -18,7 +18,7 @@ jobs:
   ingest:
     name: Retrieve and store job listings
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository

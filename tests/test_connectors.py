@@ -44,6 +44,44 @@ class ExtractionTests(unittest.TestCase):
         )
 
 
+class IngestionTimingTests(unittest.TestCase):
+    @patch("main.time.perf_counter", side_effect=[100.0, 101.234])
+    def test_reports_elapsed_time_for_a_source(self, _perf_counter):
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            with main.report_ingestion_time("Example", "greenhouse"):
+                pass
+
+        self.assertEqual(
+            output.getvalue().strip(),
+            "Example: tiempo de ingesta (greenhouse): 1.23 s",
+        )
+
+    @patch("main.time.perf_counter", side_effect=[200.0, 202.5])
+    def test_reports_elapsed_time_when_ingestion_fails(
+        self,
+        _perf_counter,
+    ):
+        output = io.StringIO()
+
+        def failing_ingestion():
+            with main.report_ingestion_time("Example", "ashby"):
+                raise ValueError("source failed")
+
+        with redirect_stdout(output):
+            self.assertRaisesRegex(
+                ValueError,
+                "source failed",
+                failing_ingestion,
+            )
+
+        self.assertEqual(
+            output.getvalue().strip(),
+            "Example: tiempo de ingesta (ashby): 2.50 s",
+        )
+
+
 class MatchingTests(unittest.TestCase):
     def make_job(self, title, description="", experience_text=None):
         return {
