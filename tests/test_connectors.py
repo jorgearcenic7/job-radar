@@ -65,10 +65,16 @@ class IngestionTimingTests(unittest.TestCase):
     ):
         output = io.StringIO()
 
-        with self.assertRaisesRegex(ValueError, "source failed"):
-            with redirect_stdout(output):
-                with main.report_ingestion_time("Example", "ashby"):
-                    raise ValueError("source failed")
+        def failing_ingestion():
+            with main.report_ingestion_time("Example", "ashby"):
+                raise ValueError("source failed")
+
+        with redirect_stdout(output):
+            self.assertRaisesRegex(
+                ValueError,
+                "source failed",
+                failing_ingestion,
+            )
 
         self.assertEqual(
             output.getvalue().strip(),
