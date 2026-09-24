@@ -83,12 +83,78 @@ class IngestionTimingTests(unittest.TestCase):
 
 
 class MatchingTests(unittest.TestCase):
-    def make_job(self, title, description="", experience_text=None):
+    def make_job(
+        self,
+        title,
+        description="",
+        experience_text=None,
+        location="Madrid, Spain",
+    ):
         return {
             "title": title,
             "description": description,
             "experience_text": experience_text,
+            "location": location,
         }
+
+    @patch("main.infer_countries", return_value=["Spain"])
+    def test_spanish_city_is_accepted(self, infer_countries):
+        result = main.classify(
+            self.make_job(
+                "Junior Data Engineer",
+                location="Barcelona",
+            )
+        )
+
+        self.assertEqual(result[0], "Buena coincidencia")
+        infer_countries.assert_called_once_with("Barcelona")
+
+    def test_remote_location_is_accepted_regardless_of_country(self):
+        result = main.classify(
+            self.make_job(
+                "Junior Data Engineer",
+                location="Remote - Europe",
+            )
+        )
+
+        self.assertEqual(result[0], "Buena coincidencia")
+
+    def test_spanish_remote_word_is_accepted(self):
+        result = main.classify(
+            self.make_job(
+                "Junior Data Engineer",
+                location="Remoto",
+            )
+        )
+
+        self.assertEqual(result[0], "Buena coincidencia")
+
+    @patch("main.infer_countries", return_value=["United Kingdom"])
+    def test_foreign_non_remote_location_is_rejected(
+        self,
+        infer_countries,
+    ):
+        result = main.classify(
+            self.make_job(
+                "Junior Data Engineer",
+                location="London, United Kingdom",
+            )
+        )
+
+        self.assertIsNone(result)
+        infer_countries.assert_called_once_with(
+            "London, United Kingdom"
+        )
+
+    def test_missing_location_is_rejected(self):
+        result = main.classify(
+            self.make_job(
+                "Junior Data Engineer",
+                location=None,
+            )
+        )
+
+        self.assertIsNone(result)
 
     def test_junior_data_engineer_is_good_match(self):
         result = main.classify(

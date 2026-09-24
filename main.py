@@ -150,6 +150,39 @@ def normalize(text):
     return re.sub(r"\s+", " ", (text or "").casefold()).strip()
 
 
+def matches_target_location(location):
+    value = normalize(str(location or ""))
+
+    if not value:
+        return False
+
+    remote = re.search(
+        r"\b("
+        r"remote|remotely|remoto|remota|"
+        r"teletrabajo|distributed|anywhere|"
+        r"work from (?:anywhere|home)"
+        r")\b",
+        value,
+    )
+
+    if remote:
+        return True
+
+    if re.search(r"\b(?:spain|españa)\b", value):
+        return True
+
+    location_parts = {
+        normalize(part)
+        for part in re.split(r"[,/()]", value)
+        if part.strip()
+    }
+
+    if "es" in location_parts or "esp" in location_parts:
+        return True
+
+    return "Spain" in infer_countries(location)
+
+
 def plain_text(html):
     parser = TextExtractor()
     parser.feed(unescape(html or ""))
@@ -354,6 +387,7 @@ def classify(job):
     - Architect
     - 4+ años mínimos de experiencia
     - nivel IV / 4 o superior
+    - ubicaciones fuera de España que no sean remotas
 
     RESULTADOS
     ----------
@@ -378,6 +412,11 @@ def classify(job):
     description = normalize(
         raw_description
     )
+
+    location = job.get("location")
+
+    if not matches_target_location(location):
+        return None
 
     # =========================================================
     # 1. DESCARTES ABSOLUTOS POR TÍTULO
