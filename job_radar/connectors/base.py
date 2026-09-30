@@ -8,5 +8,5 @@ class Connector(Protocol):
     source: str
 
     def fetch(self) -> list[Job]:
-        ...
+        raise NotImplementedError
 
