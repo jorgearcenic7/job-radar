@@ -23,8 +23,10 @@ aplicación web permite buscar y filtrar únicamente las oportunidades activas.
 - Normalización de países sin alterar la ubicación original.
 - Upserts idempotentes y seguimiento de ofertas abiertas, cerradas y
   reactivadas.
-- Protección ante snapshots vacíos: un fallo del proveedor no cierra todas sus
-  ofertas.
+- Protección ante snapshots vacíos o anómalamente pequeños: un resultado
+  incompleto del proveedor no cierra automáticamente sus ofertas ausentes.
+- Historial persistente de ejecuciones y métricas por fuente para detectar
+  fallos, lentitud y cambios anómalos.
 - Notificación por correo con todas las coincidencias activas al terminar cada
   ejecución.
 - Web con búsqueda, filtros, paginación y España seleccionada por defecto.
@@ -92,8 +94,9 @@ datos, data warehouses, lakes y lakehouses, procesamiento batch o streaming,
 SQL, Python, Spark, Databricks, Airflow, dbt, Kafka, Snowflake, BigQuery,
 Redshift, Microsoft Fabric y plataformas cloud.
 
-Las reglas están implementadas en [`classify`](main.py) y nunca inventan un
-salario o una experiencia que la fuente no haya publicado.
+Las reglas están implementadas en
+[`classify`](job_radar/matching/rules.py) y nunca inventan un salario o una
+experiencia que la fuente no haya publicado.
 
 ## Puesta en marcha local
 
@@ -112,6 +115,8 @@ Crea una base de datos local y aplica el esquema:
 createdb job_radar
 psql job_radar < sql/001_create_jobs.sql
 psql job_radar < sql/002_add_job_lifecycle.sql
+psql job_radar < sql/003_add_ingestion_observability.sql
+psql job_radar < sql/004_add_snapshot_health.sql
 ```
 
 Copia las variables de ejemplo y sustituye la contraseña por tus credenciales
@@ -147,8 +152,18 @@ ejecutar únicamente la ingesta y PostgreSQL con Docker:
 docker compose up -d db
 docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < sql/001_create_jobs.sql
 docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < sql/002_add_job_lifecycle.sql
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < sql/003_add_ingestion_observability.sql
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < sql/004_add_snapshot_health.sql
 docker compose run --rm pipeline
 ```
+
+Cada ejecución crea una fila en `ingestion_runs` y una fila por fuente en
+`source_runs`. Se registran estado, duración, ofertas vistas, nuevas y cerradas,
+coincidencias y el tipo/mensaje de error cuando corresponde. Los logs incluyen
+el `run_id` y las mismas métricas para facilitar el diagnóstico inmediato.
+Cada fuente registra además `snapshot_status` y `closure_suppressed`; los
+snapshots vacíos o sospechosos actualizan las ofertas recibidas pero no cierran
+las ausentes.
 
 ### 3. Ejecutar la web
 
@@ -192,7 +207,7 @@ En local, las mismas variables se pueden definir en `.env`. Si
 
 ```bash
 python -m pip install -r requirements.txt -r requirements-dev.txt
-python -m compileall -q main.py tests
+python -m compileall -q main.py job_radar tests
 python -m unittest discover -s tests -v
 
 cd web
@@ -203,7 +218,8 @@ npm run build
 
 Los tests unitarios cubren extracción, matching, generación segura del correo
 y conectores representativos de Greenhouse, Ashby, Workday y CaixaBank Tech.
-Los tests de ciclo de vida requieren una base PostgreSQL desechable:
+Los tests de ciclo de vida y del repositorio de ejecuciones requieren una base
+PostgreSQL desechable:
 
 ```bash
 TEST_DATABASE_URL=postgresql://user:password@localhost:5432/job_radar_test \

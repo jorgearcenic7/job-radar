@@ -1,0 +1,2 @@
+"""Job Radar ingestion package."""
+
