@@ -4,6 +4,10 @@ import unicodedata
 from job_radar.domain import Job
 
 
+_COUNTRY_ALIASES = None
+_CITY_COUNTRIES = None
+
+
 def normalize(text):
     return re.sub(r"\s+", " ", (text or "").casefold()).strip()
 
