@@ -136,7 +136,7 @@ def run(run_repository: RunRepository | None = None) -> int:
 
             try:
                 process_connector(connector, source_metrics, repository)
-            except BaseException as error:
+            except Exception as error:
                 duration_ms = _duration_ms(started_at)
                 run_metrics.sources_failed += 1
                 run_metrics.add(source_metrics)
