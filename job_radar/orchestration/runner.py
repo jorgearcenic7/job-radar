@@ -236,7 +236,10 @@ def run(run_repository: RunRepository | None = None) -> int:
             final_status = "partial"
         else:
             final_status = "success"
-    except BaseException as error:
+    except (KeyboardInterrupt, SystemExit) as error:
+        fatal_error = error
+        final_status = "failed"
+    except Exception as error:
         fatal_error = error
         final_status = "failed"
     finally:
