@@ -255,7 +255,7 @@ def run(run_repository: RunRepository | None = None) -> int:
                 matches=run_metrics.matches,
             )
             finalized = True
-        except BaseException as error:
+        except Exception as error:
             LOGGER.exception(
                 "ingestion_run_finalize_failed run_id=%s status=failed",
                 run_id,
