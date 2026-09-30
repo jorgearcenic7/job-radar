@@ -65,7 +65,7 @@ jobs:
         run: python -m pip_audit -r requirements.txt --strict
 
       - name: Check Python syntax
-        run: python -m compileall -q main.py tests
+        run: python -m compileall -q main.py job_radar tests
 
       - name: Run automated tests
         run: python -m unittest discover -s tests -v

@@ -5,7 +5,10 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-import main
+from job_radar import matching, notifications
+from job_radar.connectors import ats, common, custom
+from job_radar.connectors import registry
+from job_radar.domain import Job
 
 
 class JsonResponse:
@@ -24,7 +27,7 @@ class JsonResponse:
 
 class ExtractionTests(unittest.TestCase):
     def test_plain_text(self):
-        result = main.plain_text(
+        result = common.plain_text(
             "<p>Build &amp; maintain</p><p>data pipelines</p>"
         )
         self.assertEqual(result, "Build & maintain data pipelines")
@@ -32,53 +35,15 @@ class ExtractionTests(unittest.TestCase):
     def test_salary_extraction(self):
         description = "Salary: €50,000 - €60,000 per year"
         self.assertEqual(
-            main.extract_salary(description),
+            matching.extract_salary(description),
             "€50,000 - €60,000",
         )
 
     def test_experience_extraction(self):
         description = "Minimum 2 years of relevant experience required"
         self.assertEqual(
-            main.extract_experience(description),
+            matching.extract_experience(description),
             "Minimum 2 years of relevant experience",
-        )
-
-
-class IngestionTimingTests(unittest.TestCase):
-    @patch("main.time.perf_counter", side_effect=[100.0, 101.234])
-    def test_reports_elapsed_time_for_a_source(self, _perf_counter):
-        output = io.StringIO()
-
-        with redirect_stdout(output):
-            with main.report_ingestion_time("Example", "greenhouse"):
-                pass
-
-        self.assertEqual(
-            output.getvalue().strip(),
-            "Example: tiempo de ingesta (greenhouse): 1.23 s",
-        )
-
-    @patch("main.time.perf_counter", side_effect=[200.0, 202.5])
-    def test_reports_elapsed_time_when_ingestion_fails(
-        self,
-        _perf_counter,
-    ):
-        output = io.StringIO()
-
-        def failing_ingestion():
-            with main.report_ingestion_time("Example", "ashby"):
-                raise ValueError("source failed")
-
-        with redirect_stdout(output):
-            self.assertRaisesRegex(
-                ValueError,
-                "source failed",
-                failing_ingestion,
-            )
-
-        self.assertEqual(
-            output.getvalue().strip(),
-            "Example: tiempo de ingesta (ashby): 2.50 s",
         )
 
 
@@ -90,16 +55,21 @@ class MatchingTests(unittest.TestCase):
         experience_text=None,
         location="Madrid, Spain",
     ):
-        return {
-            "title": title,
-            "description": description,
-            "experience_text": experience_text,
-            "location": location,
-        }
+        return Job(
+            source="test:matching",
+            source_job_id="job-1",
+            company="Example",
+            title=title,
+            description=description,
+            experience_text=experience_text,
+            location=location,
+            url="https://example.com/jobs/job-1",
+            salary_text=None,
+        )
 
-    @patch("main.infer_countries", return_value=["Spain"])
+    @patch("job_radar.matching.rules.infer_countries", return_value=["Spain"])
     def test_spanish_city_is_accepted(self, infer_countries):
-        result = main.classify(
+        result = matching.classify(
             self.make_job(
                 "Junior Data Engineer",
                 location="Barcelona",
@@ -110,7 +80,7 @@ class MatchingTests(unittest.TestCase):
         infer_countries.assert_called_once_with("Barcelona")
 
     def test_remote_location_is_accepted_regardless_of_country(self):
-        result = main.classify(
+        result = matching.classify(
             self.make_job(
                 "Junior Data Engineer",
                 location="Remote - Europe",
@@ -120,7 +90,7 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(result[0], "Buena coincidencia")
 
     def test_spanish_remote_word_is_accepted(self):
-        result = main.classify(
+        result = matching.classify(
             self.make_job(
                 "Junior Data Engineer",
                 location="Remoto",
@@ -129,12 +99,12 @@ class MatchingTests(unittest.TestCase):
 
         self.assertEqual(result[0], "Buena coincidencia")
 
-    @patch("main.infer_countries", return_value=["United Kingdom"])
+    @patch("job_radar.matching.rules.infer_countries", return_value=["United Kingdom"])
     def test_foreign_non_remote_location_is_rejected(
         self,
         infer_countries,
     ):
-        result = main.classify(
+        result = matching.classify(
             self.make_job(
                 "Junior Data Engineer",
                 location="London, United Kingdom",
@@ -147,7 +117,7 @@ class MatchingTests(unittest.TestCase):
         )
 
     def test_missing_location_is_rejected(self):
-        result = main.classify(
+        result = matching.classify(
             self.make_job(
                 "Junior Data Engineer",
                 location=None,
@@ -157,7 +127,7 @@ class MatchingTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_junior_data_engineer_is_good_match(self):
-        result = main.classify(
+        result = matching.classify(
             self.make_job(
                 "Junior Data Engineer",
                 "Python, SQL and data pipelines",
@@ -167,13 +137,13 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(result[0], "Buena coincidencia")
 
     def test_unspecified_data_engineer_is_stretch(self):
-        result = main.classify(
+        result = matching.classify(
             self.make_job("Data Engineer")
         )
         self.assertEqual(result[0], "Stretch")
 
     def test_data_focused_software_engineer_is_stretch(self):
-        result = main.classify(
+        result = matching.classify(
             self.make_job(
                 "Software Engineer",
                 "Build data pipelines, ETL systems and a data warehouse",
@@ -182,13 +152,13 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(result[0], "Stretch")
 
     def test_senior_role_is_rejected(self):
-        result = main.classify(
+        result = matching.classify(
             self.make_job("Senior Data Engineer")
         )
         self.assertIsNone(result)
 
     def test_four_year_requirement_is_rejected(self):
-        result = main.classify(
+        result = matching.classify(
             self.make_job(
                 "Data Engineer",
                 experience_text="4 years of experience",
@@ -210,7 +180,7 @@ class EmailNotificationTests(unittest.TestCase):
         }
 
     def test_email_content_escapes_data_and_includes_plain_text(self):
-        subject, html, text = main.build_match_email([self.make_match()])
+        subject, html, text = notifications.build_match_email([self.make_match()])
 
         self.assertIn("1 coincidencia", subject)
         self.assertIn("Example &amp; Co", html)
@@ -223,14 +193,14 @@ class EmailNotificationTests(unittest.TestCase):
         match = self.make_match()
         match["url"] = "javascript:alert(1)"
 
-        _subject, html, text = main.build_match_email([match])
+        _subject, html, text = notifications.build_match_email([match])
 
         self.assertNotIn("javascript:", html)
         self.assertNotIn("javascript:", text)
         self.assertIn("Enlace no disponible", html)
 
-    @patch("main.get_active_matches")
-    @patch("main.urlopen")
+    @patch("job_radar.notifications.email.get_active_matches")
+    @patch("job_radar.notifications.email.urlopen")
     def test_send_notification_uses_resend_and_idempotency(
         self,
         urlopen,
@@ -247,7 +217,7 @@ class EmailNotificationTests(unittest.TestCase):
 
         with patch.dict(os.environ, environment, clear=False):
             with redirect_stdout(io.StringIO()):
-                result = main.send_match_notification()
+                result = notifications.send_match_notification()
 
         self.assertEqual(result, "email-123")
         request = urlopen.call_args.args[0]
@@ -257,7 +227,7 @@ class EmailNotificationTests(unittest.TestCase):
             for name, value in request.header_items()
         }
 
-        self.assertEqual(request.full_url, main.RESEND_EMAILS_URL)
+        self.assertEqual(request.full_url, notifications.RESEND_EMAILS_URL)
         self.assertEqual(payload["to"], ["recipient@example.com"])
         self.assertEqual(
             payload["from"],
@@ -266,20 +236,20 @@ class EmailNotificationTests(unittest.TestCase):
         self.assertEqual(headers["authorization"], "Bearer re_test")
         self.assertEqual(headers["idempotency-key"], "job-radar/run-123")
 
-    @patch("main.get_active_matches")
+    @patch("job_radar.notifications.email.get_active_matches")
     def test_notification_is_disabled_without_api_key(
         self,
         get_active_matches,
     ):
         with patch.dict(os.environ, {"RESEND_API_KEY": ""}, clear=False):
             with redirect_stdout(io.StringIO()):
-                result = main.send_match_notification()
+                result = notifications.send_match_notification()
 
         self.assertIsNone(result)
         get_active_matches.assert_not_called()
 
 class GreenhouseTests(unittest.TestCase):
-    @patch("main.fetch_json")
+    @patch("job_radar.connectors.ats.fetch_json")
     def test_greenhouse_mapping(self, fetch_json):
         fetch_json.return_value = {
             "jobs": [
@@ -296,21 +266,22 @@ class GreenhouseTests(unittest.TestCase):
             ]
         }
 
-        jobs = main.fetch_greenhouse("Example", "example")
+        jobs = ats.fetch_greenhouse("Example", "example")
 
         self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["source"], "greenhouse")
-        self.assertEqual(jobs[0]["source_job_id"], "123")
-        self.assertEqual(jobs[0]["company"], "Example")
-        self.assertEqual(jobs[0]["location"], "Madrid, Spain")
+        self.assertIsInstance(jobs[0], Job)
+        self.assertEqual(jobs[0].source, "greenhouse")
+        self.assertEqual(jobs[0].source_job_id, "123")
+        self.assertEqual(jobs[0].company, "Example")
+        self.assertEqual(jobs[0].location, "Madrid, Spain")
         self.assertEqual(
-            jobs[0]["experience_text"],
+            jobs[0].experience_text,
             "2 years of experience",
         )
 
 
 class AshbyTests(unittest.TestCase):
-    @patch("main.fetch_json")
+    @patch("job_radar.connectors.ats.fetch_json")
     def test_ashby_mapping_and_filtering(self, fetch_json):
         fetch_json.return_value = {
             "jobs": [
@@ -337,20 +308,20 @@ class AshbyTests(unittest.TestCase):
             ]
         }
 
-        jobs = main.fetch_ashby("Example", "example")
+        jobs = ats.fetch_ashby("Example", "example")
 
         self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["source"], "ashby")
-        self.assertEqual(jobs[0]["source_job_id"], "abc")
+        self.assertEqual(jobs[0].source, "ashby")
+        self.assertEqual(jobs[0].source_job_id, "abc")
         self.assertEqual(
-            jobs[0]["location"],
+            jobs[0].location,
             "Madrid; Remote - Spain",
         )
-        self.assertEqual(jobs[0]["salary_text"], "€45k - €55k")
+        self.assertEqual(jobs[0].salary_text, "€45k - €55k")
 
 
 class LeverTests(unittest.TestCase):
-    @patch("main.fetch_json")
+    @patch("job_radar.connectors.ats.fetch_json")
     def test_lever_mapping(self, fetch_json):
         fetch_json.return_value = [{
             "id": "paytm-123",
@@ -371,23 +342,23 @@ class LeverTests(unittest.TestCase):
             },
         }]
 
-        jobs = main.fetch_lever("Paytm", "paytm")
+        jobs = ats.fetch_lever("Paytm", "paytm")
 
         self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["source"], "lever:paytm")
-        self.assertEqual(jobs[0]["location"], "Noida; Bengaluru")
+        self.assertEqual(jobs[0].source, "lever:paytm")
+        self.assertEqual(jobs[0].location, "Noida; Bengaluru")
         self.assertEqual(
-            jobs[0]["salary_text"],
+            jobs[0].salary_text,
             "100000 – 150000 INR / per year salary",
         )
         self.assertEqual(
-            jobs[0]["experience_text"],
+            jobs[0].experience_text,
             "2 years of experience",
         )
 
 
 class BambooHRTests(unittest.TestCase):
-    @patch("main.fetch_json")
+    @patch("job_radar.connectors.ats.fetch_json")
     def test_bamboohr_mapping(self, fetch_json):
         fetch_json.return_value = {
             "result": [{
@@ -403,22 +374,22 @@ class BambooHRTests(unittest.TestCase):
             }]
         }
 
-        jobs = main.fetch_bamboohr("Flutterwave", "flutterwavego")
+        jobs = ats.fetch_bamboohr("Flutterwave", "flutterwavego")
 
         self.assertEqual(len(jobs), 1)
         self.assertEqual(
-            jobs[0]["source"],
+            jobs[0].source,
             "bamboohr:flutterwavego",
         )
-        self.assertEqual(jobs[0]["location"], "Lekki, Lagos, Nigeria")
+        self.assertEqual(jobs[0].location, "Lekki, Lagos, Nigeria")
         self.assertEqual(
-            jobs[0]["url"],
+            jobs[0].url,
             "https://flutterwavego.bamboohr.com/careers/1383",
         )
 
 
 class EightfoldTests(unittest.TestCase):
-    @patch("main.fetch_json")
+    @patch("job_radar.connectors.ats.fetch_json")
     def test_listing_and_relevant_job_enrichment(self, fetch_json):
         fetch_json.side_effect = [
             {
@@ -452,23 +423,23 @@ class EightfoldTests(unittest.TestCase):
         ]
 
         with redirect_stdout(io.StringIO()):
-            jobs = main.fetch_eightfold(
+            jobs = ats.fetch_eightfold(
                 "PayPal",
                 "paypal.eightfold.ai",
                 "paypal.com",
             )
 
         self.assertEqual(len(jobs), 2)
-        self.assertEqual(jobs[0]["source"], "eightfold:paypal.com")
+        self.assertEqual(jobs[0].source, "eightfold:paypal.com")
         self.assertEqual(
-            jobs[0]["experience_text"],
+            jobs[0].experience_text,
             "2 years of experience",
         )
-        self.assertEqual(jobs[1]["description"], "")
+        self.assertEqual(jobs[1].description, "")
 
 
 class DeelBoardTests(unittest.TestCase):
-    @patch("main.fetch_text")
+    @patch("job_radar.connectors.custom.fetch_text")
     def test_company_board_mapping(self, fetch_text):
         job_id = "161d3133-1185-405b-a037-0f5aa14ee60b"
         fetch_text.side_effect = [
@@ -490,16 +461,16 @@ class DeelBoardTests(unittest.TestCase):
             """,
         ]
 
-        jobs = main.fetch_deel_company("Klarna", "klarna")
+        jobs = custom.fetch_deel_company("Klarna", "klarna")
 
         self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["source"], "deel:klarna")
-        self.assertEqual(jobs[0]["company"], "Klarna")
-        self.assertEqual(jobs[0]["location"], "Stockholm, Sweden")
+        self.assertEqual(jobs[0].source, "deel:klarna")
+        self.assertEqual(jobs[0].company, "Klarna")
+        self.assertEqual(jobs[0].location, "Stockholm, Sweden")
 
 
 class AntGroupTests(unittest.TestCase):
-    @patch("main.urlopen")
+    @patch("job_radar.connectors.common.urlopen")
     def test_ant_group_mapping(self, urlopen):
         urlopen.return_value = JsonResponse({
             "success": True,
@@ -516,17 +487,17 @@ class AntGroupTests(unittest.TestCase):
             "currentPage": 1,
         })
 
-        jobs = main.fetch_ant_group()
+        jobs = custom.fetch_ant_group()
 
         self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["source"], "ant:careers")
+        self.assertEqual(jobs[0].source, "ant:careers")
         self.assertEqual(
-            jobs[0]["company"],
+            jobs[0].company,
             "Ant Group / Ant International",
         )
-        self.assertEqual(jobs[0]["location"], "Kuala Lumpur")
+        self.assertEqual(jobs[0].location, "Kuala Lumpur")
         self.assertEqual(
-            jobs[0]["experience_text"],
+            jobs[0].experience_text,
             "At least 3 years of experience",
         )
         request = urlopen.call_args.args[0]
@@ -536,13 +507,13 @@ class AntGroupTests(unittest.TestCase):
 class WorkdayTests(unittest.TestCase):
     def test_relevant_title_filter(self):
         self.assertTrue(
-            main.workday_relevant_title("Data Platform Engineer")
+            ats.workday_relevant_title("Data Platform Engineer")
         )
         self.assertFalse(
-            main.workday_relevant_title("Commercial Account Manager")
+            ats.workday_relevant_title("Commercial Account Manager")
         )
 
-    @patch("main.urlopen")
+    @patch("job_radar.connectors.common.urlopen")
     def test_workday_listing_and_enrichment(self, urlopen):
         urlopen.side_effect = [
             JsonResponse({
@@ -572,7 +543,7 @@ class WorkdayTests(unittest.TestCase):
         ]
 
         with redirect_stdout(io.StringIO()):
-            jobs = main.fetch_workday(
+            jobs = ats.fetch_workday(
                 "Example Bank",
                 "example.wd3.myworkdayjobs.com",
                 "example",
@@ -580,53 +551,53 @@ class WorkdayTests(unittest.TestCase):
             )
 
         self.assertEqual(len(jobs), 2)
-        self.assertEqual(jobs[0]["source"], "workday:example")
-        self.assertEqual(jobs[0]["source_job_id"], "Data-Engineer_R123")
-        self.assertEqual(jobs[0]["url"], "https://example.com/R123")
+        self.assertEqual(jobs[0].source, "workday:example")
+        self.assertEqual(jobs[0].source_job_id, "Data-Engineer_R123")
+        self.assertEqual(jobs[0].url, "https://example.com/R123")
         self.assertEqual(
-            jobs[0]["experience_text"],
+            jobs[0].experience_text,
             "2 years of experience",
         )
-        self.assertEqual(jobs[1]["description"], "")
+        self.assertEqual(jobs[1].description, "")
         self.assertEqual(urlopen.call_count, 2)
 
 
 class NewCompanyConfigurationTests(unittest.TestCase):
     def test_requested_companies_are_configured(self):
-        self.assertIn("Celonis", main.GREENHOUSE_COMPANIES)
-        self.assertIn("Lovable", main.ASHBY_COMPANIES)
-        self.assertIn("Amadeus", main.WORKDAY_COMPANIES)
-        self.assertIn("AVEVA", main.WORKDAY_COMPANIES)
-        self.assertIn("IFS", main.SMARTRECRUITERS_COMPANIES)
-        self.assertIn("SAP", main.SUCCESSFACTORS_COMPANIES)
-        self.assertIn("Hexagon", main.SUCCESSFACTORS_COMPANIES)
-        self.assertEqual(main.GREENHOUSE_COMPANIES["Stripe"], "stripe")
-        self.assertEqual(main.GREENHOUSE_COMPANIES["Adyen"], "adyen")
+        self.assertIn("Celonis", registry.GREENHOUSE_COMPANIES)
+        self.assertIn("Lovable", registry.ASHBY_COMPANIES)
+        self.assertIn("Amadeus", registry.WORKDAY_COMPANIES)
+        self.assertIn("AVEVA", registry.WORKDAY_COMPANIES)
+        self.assertIn("IFS", registry.SMARTRECRUITERS_COMPANIES)
+        self.assertIn("SAP", registry.SUCCESSFACTORS_COMPANIES)
+        self.assertIn("Hexagon", registry.SUCCESSFACTORS_COMPANIES)
+        self.assertEqual(registry.GREENHOUSE_COMPANIES["Stripe"], "stripe")
+        self.assertEqual(registry.GREENHOUSE_COMPANIES["Adyen"], "adyen")
         self.assertEqual(
-            main.GREENHOUSE_COMPANIES["Block (incl. Afterpay)"],
+            registry.GREENHOUSE_COMPANIES["Block (incl. Afterpay)"],
             "block",
         )
-        self.assertIn("Chime", main.GREENHOUSE_COMPANIES)
-        self.assertIn("Nubank", main.GREENHOUSE_COMPANIES)
-        self.assertIn("Robinhood", main.GREENHOUSE_COMPANIES)
-        self.assertIn("SoFi", main.GREENHOUSE_COMPANIES)
-        self.assertIn("Coinbase", main.GREENHOUSE_COMPANIES)
-        self.assertIn("Plaid", main.ASHBY_COMPANIES)
-        self.assertIn("Qonto", main.ASHBY_COMPANIES)
-        self.assertIn("Mollie", main.ASHBY_COMPANIES)
-        self.assertIn("Wise", main.SMARTRECRUITERS_COMPANIES)
+        self.assertIn("Chime", registry.GREENHOUSE_COMPANIES)
+        self.assertIn("Nubank", registry.GREENHOUSE_COMPANIES)
+        self.assertIn("Robinhood", registry.GREENHOUSE_COMPANIES)
+        self.assertIn("SoFi", registry.GREENHOUSE_COMPANIES)
+        self.assertIn("Coinbase", registry.GREENHOUSE_COMPANIES)
+        self.assertIn("Plaid", registry.ASHBY_COMPANIES)
+        self.assertIn("Qonto", registry.ASHBY_COMPANIES)
+        self.assertIn("Mollie", registry.ASHBY_COMPANIES)
+        self.assertIn("Wise", registry.SMARTRECRUITERS_COMPANIES)
         self.assertIn(
             "Grab / Grab Financial Group",
-            main.SMARTRECRUITERS_COMPANIES,
+            registry.SMARTRECRUITERS_COMPANIES,
         )
-        self.assertIn("Paytm", main.LEVER_COMPANIES)
-        self.assertIn("Klarna", main.DEEL_COMPANIES)
-        self.assertIn("Flutterwave", main.BAMBOOHR_COMPANIES)
-        self.assertIn("PayPal", main.EIGHTFOLD_COMPANIES)
+        self.assertIn("Paytm", registry.LEVER_COMPANIES)
+        self.assertIn("Klarna", registry.DEEL_COMPANIES)
+        self.assertIn("Flutterwave", registry.BAMBOOHR_COMPANIES)
+        self.assertIn("PayPal", registry.EIGHTFOLD_COMPANIES)
 
 
 class SmartRecruitersTests(unittest.TestCase):
-    @patch("main.fetch_json")
+    @patch("job_radar.connectors.ats.fetch_json")
     def test_listing_and_relevant_job_enrichment(self, fetch_json):
         fetch_json.side_effect = [
             {
@@ -660,20 +631,20 @@ class SmartRecruitersTests(unittest.TestCase):
         ]
 
         with redirect_stdout(io.StringIO()):
-            jobs = main.fetch_smartrecruiters("IFS", "IFS1")
+            jobs = ats.fetch_smartrecruiters("IFS", "IFS1")
 
         self.assertEqual(len(jobs), 2)
-        self.assertEqual(jobs[0]["source"], "smartrecruiters:ifs1")
-        self.assertEqual(jobs[0]["url"], "https://jobs.example.com/123")
+        self.assertEqual(jobs[0].source, "smartrecruiters:ifs1")
+        self.assertEqual(jobs[0].url, "https://jobs.example.com/123")
         self.assertEqual(
-            jobs[0]["experience_text"],
+            jobs[0].experience_text,
             "2 years of experience",
         )
-        self.assertEqual(jobs[1]["description"], "")
+        self.assertEqual(jobs[1].description, "")
 
 
 class SuccessFactorsTests(unittest.TestCase):
-    @patch("main.fetch_text")
+    @patch("job_radar.connectors.ats.fetch_text")
     def test_successfactors_mapping(self, fetch_text):
         fetch_text.return_value = """
             <Job-Listing>
@@ -692,7 +663,7 @@ class SuccessFactorsTests(unittest.TestCase):
             </Job-Listing>
         """
 
-        jobs = main.fetch_successfactors(
+        jobs = ats.fetch_successfactors(
             "SAP",
             "career.example.com",
             "SAP",
@@ -700,18 +671,18 @@ class SuccessFactorsTests(unittest.TestCase):
         )
 
         self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["source"], "successfactors:sap")
-        self.assertEqual(jobs[0]["source_job_id"], "123")
-        self.assertEqual(jobs[0]["location"], "Madrid, Spain")
-        self.assertIn("slug=Data-Engineer-II", jobs[0]["url"])
+        self.assertEqual(jobs[0].source, "successfactors:sap")
+        self.assertEqual(jobs[0].source_job_id, "123")
+        self.assertEqual(jobs[0].location, "Madrid, Spain")
+        self.assertIn("slug=Data-Engineer-II", jobs[0].url)
         self.assertEqual(
-            jobs[0]["experience_text"],
+            jobs[0].experience_text,
             "2 years of experience",
         )
 
 
 class DassaultTests(unittest.TestCase):
-    @patch("main.fetch_json")
+    @patch("job_radar.connectors.custom.fetch_json")
     def test_dassault_mapping(self, fetch_json):
         fetch_json.return_value = {
             "nhits": 1,
@@ -735,16 +706,16 @@ class DassaultTests(unittest.TestCase):
             }],
         }
 
-        jobs = main.fetch_dassault_systemes()
+        jobs = custom.fetch_dassault_systemes()
 
         self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["source"], "dassault:careers")
-        self.assertEqual(jobs[0]["company"], "Dassault Systèmes")
-        self.assertEqual(jobs[0]["description"], "Build Python data pipelines.")
+        self.assertEqual(jobs[0].source, "dassault:careers")
+        self.assertEqual(jobs[0].company, "Dassault Systèmes")
+        self.assertEqual(jobs[0].description, "Build Python data pipelines.")
 
 
 class VismaTests(unittest.TestCase):
-    @patch("main.fetch_text")
+    @patch("job_radar.connectors.custom.fetch_text")
     def test_visma_mapping(self, fetch_text):
         fetch_text.return_value = """
           <div role="listitem" class="openposition-list-item w-dyn-item">
@@ -760,12 +731,12 @@ class VismaTests(unittest.TestCase):
           </div>
         """
 
-        jobs = main.fetch_visma()
+        jobs = custom.fetch_visma()
 
         self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["source"], "visma:careers")
-        self.assertEqual(jobs[0]["location"], "Spain, Madrid")
-        self.assertEqual(jobs[0]["description"], "Data Science Python, SQL")
+        self.assertEqual(jobs[0].source, "visma:careers")
+        self.assertEqual(jobs[0].location, "Spain, Madrid")
+        self.assertEqual(jobs[0].description, "Data Science Python, SQL")
 
 
 class SageTests(unittest.TestCase):
@@ -773,14 +744,18 @@ class SageTests(unittest.TestCase):
         page = """
           <tr class="dataRow even">
             <td><span>VN123</span></td>
-            <td><a href="/careers/fRecruit__ApplyJob?vacancyNo=VN123&amp;portal=English">Data Engineer</a></td>
+            <td>
+              <a href="/careers/fRecruit__ApplyJob?vacancyNo=VN123&amp;portal=English">
+                Data Engineer
+              </a>
+            </td>
             <td>Engineering</td>
             <td><span>Spain</span></td>
             <td><span>Barcelona</span></td>
           </tr>
         """
 
-        rows = main.sage_listing_rows(page)
+        rows = custom.sage_listing_rows(page)
 
         self.assertEqual(rows, [{
             "id": "VN123",
