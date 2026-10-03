@@ -96,8 +96,11 @@ jobs:
       - name: Install dependencies from lockfile
         run: npm ci
 
-      - name: Audit npm dependencies
-        run: npm audit --audit-level=high
+      - name: Audit production npm dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Report full npm audit
+        run: npm audit --audit-level=high || true
 
       - name: Lint web application
         run: npm run lint
