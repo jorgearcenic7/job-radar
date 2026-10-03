@@ -104,7 +104,8 @@ Lead, Manager, Director o Architect. También se descartan niveles IV o
 superiores y ofertas que exigen al menos cuatro años de experiencia. Se
 admiten puestos Junior, Associate, niveles I-III y requisitos de hasta tres
 años. Para marcar una oferta como coincidencia, su ubicación debe estar en
-cualquier punto de España o indicar que el puesto es remoto.
+cualquier punto de España o ser remoto sin restricción de país o abierto a
+España/Europa.
 
 Entre las señales técnicas se encuentran pipelines, ETL/ELT, modelado de
 datos, data warehouses, lakes y lakehouses, procesamiento batch o streaming,
