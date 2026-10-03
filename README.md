@@ -1,32 +1,47 @@
 # Job Radar
 
-Job Radar es una plataforma personal que recopila, normaliza y filtra ofertas
-de Data Engineering y otros puestos técnicos relacionados en empresas de
-producto, software, SaaS y FinTech.
+Job Radar aggregates, normalizes and evaluates Data Engineering opportunities
+directly from company career sites through an automated ingestion pipeline.
+No es solo un scraper: integra múltiples ATS y portales propios, aplica reglas
+transparentes de matching, protege el ciclo de vida de las ofertas ante
+snapshots anómalos y publica los resultados en una aplicación web.
 
-**Aplicación:** <https://job-radar-snowy.vercel.app>
+### [Abrir la aplicación →](https://job-radar-snowy.vercel.app)
 
-Cada día consulta fuentes públicas de empleo, unifica sus datos, evalúa cada
-oferta mediante reglas transparentes y guarda su estado en PostgreSQL. Una
-aplicación web permite buscar y filtrar únicamente las oportunidades activas.
+![Job Radar dashboard](docs/assets/job-radar-dashboard.png)
+
+[![Automated Tests](https://github.com/jorgearcenic7/job-radar/actions/workflows/tests.yml/badge.svg)](https://github.com/jorgearcenic7/job-radar/actions/workflows/tests.yml)
+[![CodeQL](https://github.com/jorgearcenic7/job-radar/actions/workflows/codeql.yml/badge.svg)](https://github.com/jorgearcenic7/job-radar/actions/workflows/codeql.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+[Demo](https://job-radar-snowy.vercel.app) ·
+[Arquitectura](#arquitectura) ·
+[Matching](#criterios-de-matching) ·
+[Entorno local](#puesta-en-marcha-local) ·
+[Tests](#pruebas-y-calidad)
+
+## En un vistazo
+
+- **57 integraciones empresa/fuente configuradas** mediante Greenhouse, Ashby,
+  Workday y otros ATS, además de portales propios.
+- **Pipeline Python y persistencia PostgreSQL** con upserts idempotentes para
+  normalización, matching y seguimiento de ofertas abiertas, cerradas y
+  reactivadas.
+- **Dashboard Next.js** con búsqueda, filtros y acceso a las oportunidades
+  activas.
+- **Operación automatizada** en días alternos a las 06:00 (Europe/Madrid) con
+  GitHub Actions, observabilidad persistente por ejecución y fuente, y
+  protección frente a snapshots vacíos o anómalos.
+- **Controles de calidad automatizados** con tests, auditorías de dependencias,
+  Dependency Review y CodeQL.
 
 ## Funcionalidades
 
-- Ingesta automática en días alternos a las **06:00 (Europe/Madrid)** con
-  GitHub Actions.
-- 57 integraciones empresariales mediante Greenhouse, Ashby, Workday y otras
-  fuentes.
 - Matching basado en puesto, seniority, experiencia requerida y señales
   técnicas.
 - Etiquetas **Buena coincidencia** y **Stretch** para las ofertas seleccionadas.
 - Extracción de salario y experiencia cuando la empresa los publica.
 - Normalización de países sin alterar la ubicación original.
-- Upserts idempotentes y seguimiento de ofertas abiertas, cerradas y
-  reactivadas.
-- Protección ante snapshots vacíos o anómalamente pequeños: un resultado
-  incompleto del proveedor no cierra automáticamente sus ofertas ausentes.
-- Historial persistente de ejecuciones y métricas por fuente para detectar
-  fallos, lentitud y cambios anómalos.
 - Notificación por correo con todas las coincidencias activas al terminar cada
   ejecución.
 - Web con búsqueda, filtros, paginación y España seleccionada por defecto.
@@ -45,7 +60,9 @@ flowchart LR
 El pipeline conserva la descripción y la ubicación publicadas, calcula los
 campos derivados y actualiza cada oferta usando `(source, source_job_id)` como
 clave. La web solo muestra registros activos y consulta la base de datos desde
-el servidor.
+el servidor. `main.py` es únicamente el punto de entrada; los conectores, el
+dominio, el matching, la orquestación, las notificaciones y la persistencia se
+mantienen en módulos separados bajo `job_radar/`.
 
 ## Empresas y fuentes
 
@@ -258,7 +275,7 @@ personales en el repositorio. Para informar de una vulnerabilidad, sigue
 - [x] Pipeline de ingesta dockerizado.
 - [x] Persistencia PostgreSQL con upserts idempotentes.
 - [x] Web desplegada en Vercel y base de datos Neon.
-- [x] Ejecución diaria automatizada.
+- [x] Ejecución automatizada en días alternos.
 - [x] Matching, extracción de salario/experiencia y normalización de países.
 - [x] Detección segura de cierres y reactivaciones.
 - [x] Suite inicial de tests de conectores y ciclo de vida.
@@ -268,3 +285,8 @@ personales en el repositorio. Para informar de una vulnerabilidad, sigue
 
 El matching sigue siendo heurístico y los ATS externos pueden cambiar sus APIs
 o su HTML sin previo aviso.
+
+## Licencia
+
+Distribuido bajo la [Apache License 2.0](LICENSE). Consulta también
+[NOTICE](NOTICE) para la atribución del proyecto.
