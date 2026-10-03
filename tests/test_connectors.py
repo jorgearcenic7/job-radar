@@ -79,7 +79,7 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(result[0], "Buena coincidencia")
         infer_countries.assert_called_once_with("Barcelona")
 
-    def test_remote_location_is_accepted_regardless_of_country(self):
+    def test_remote_europe_location_is_accepted(self):
         result = matching.classify(
             self.make_job(
                 "Junior Data Engineer",

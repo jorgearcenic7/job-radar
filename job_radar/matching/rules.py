@@ -18,18 +18,8 @@ def matches_target_location(location):
     if not value:
         return False
 
-    remote = re.search(
-        r"\b("
-        r"remote|remotely|remoto|remota|"
-        r"teletrabajo|distributed|anywhere|"
-        r"work from (?:anywhere|home)"
-        r")\b",
-        value,
-    )
-
-    if remote:
-        return True
-
+    # España en cualquier parte, también en ubicaciones múltiples:
+    # "Madrid, Spain; Remote - US"
     if re.search(r"\b(?:spain|españa)\b", value):
         return True
 
@@ -42,7 +32,54 @@ def matches_target_location(location):
     if "es" in location_parts or "esp" in location_parts:
         return True
 
-    return "Spain" in infer_countries(location)
+    countries = infer_countries(location)
+
+    if "Spain" in countries:
+        return True
+
+    remote = re.search(
+        r"\b("
+        r"remote|remotely|remoto|remota|"
+        r"teletrabajo|distributed|anywhere|"
+        r"work from (?:anywhere|home)"
+        r")\b",
+        value,
+    )
+
+    if not remote:
+        return False
+
+    # Remoto abierto a una región que incluye España.
+    open_to_europe = re.search(
+        r"\b("
+        r"europe|europa|european union|"
+        r"eu|emea"
+        r")\b",
+        value,
+    )
+
+    if open_to_europe:
+        return True
+
+    # Remoto limitado a otro país.
+    if countries:
+        return False
+
+    # Remoto limitado a un país o región que no incluye España.
+    # infer_countries no detecta "Remote - US" porque solo
+    # reconoce códigos separados por comas o paréntesis.
+    restricted = re.search(
+        r"(?<![a-z])("
+        r"us|usa|u\.s\.(?:a\.)?|united states|"
+        r"canada|"
+        r"latam|latin america|americas|"
+        r"north america|south america|"
+        r"apac|asia|india"
+        r")(?![a-z])",
+        value,
+    )
+
+    return not restricted
 
 
 def extract_salary(description):
@@ -103,13 +140,60 @@ def extract_experience(description):
         ),
     ]
 
-    for pattern in patterns:
-        match = re.search(pattern, description or "", re.IGNORECASE)
+    description = description or ""
 
-        if match:
-            return match.group(0).strip()
+    matches = sorted(
+        (
+            match
+            for pattern in patterns
+            for match in re.finditer(
+                pattern,
+                description,
+                re.IGNORECASE,
+            )
+        ),
+        key=lambda match: match.start(),
+    )
+
+    for match in matches:
+        if _is_company_experience(description, match.start()):
+            continue
+
+        # Más de 15 años no es un requisito plausible:
+        # suele ser la antigüedad de la empresa.
+        years = int(re.search(r"\d{1,2}", match.group(0)).group(0))
+
+        if years > 15:
+            continue
+
+        return match.group(0).strip()
 
     return None
+
+
+def _is_company_experience(description, start):
+    """
+    Detecta menciones de años que describen a la empresa,
+    no al candidato: "for over 20 years", "our track record"...
+
+    Solo mira la frase actual dentro de los 60 caracteres previos.
+    """
+
+    context = description[max(0, start - 60):start]
+    context = re.split(r"[.!?;\n•]", context)[-1]
+
+    return bool(
+        re.search(
+            r"\b("
+            r"for over|founded|since|"
+            r"we have|we've|our|"
+            r"company|history|track record|"
+            r"nuestra|nuestro|empresa|trayectoria"
+            r")\b",
+            context,
+            re.IGNORECASE,
+        )
+    )
 
 
 def required_experience_years(experience_text):
@@ -145,9 +229,9 @@ def required_experience_years(experience_text):
         # 7+ years
         r"\b(\d{1,2})\+\s*(?:years?|yrs?)\b",
 
-        # 2 years of experience
+        # 2 years of experience / 5 years' experience
         (
-            r"\b(\d{1,2})\s*(?:years?|yrs?)\s+"
+            r"\b(\d{1,2})\s*(?:years?|yrs?)['’]?\s+"
             + r"(?:of\s+)?"
             + r"(?:relevant\s+|professional\s+|hands-on\s+|industry\s+)?"
             + r"experience\b"
