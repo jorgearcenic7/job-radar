@@ -4,6 +4,7 @@ from job_radar.domain import Job
 from job_radar.matching import (
     classify,
     extract_experience,
+    extract_salary,
     matches_target_location,
     required_experience_years,
 )
@@ -28,6 +29,56 @@ def make_job(location, description):
         salary_text=None,
         experience_text=None,
     )
+
+
+class ExtractSalaryTests(unittest.TestCase):
+    def test_auctane_salary_with_currency_after_amounts(self):
+        description = "Salary range: 43000 € to 52000€/year"
+
+        self.assertEqual(
+            extract_salary(description),
+            "43000 € to 52000€/year",
+        )
+
+    def test_cabify_salary_with_k_and_trailing_currency(self):
+        description = "Excellent Salary conditions: 38K - 50K€"
+
+        self.assertEqual(extract_salary(description), "38K - 50K€")
+
+    def test_extract_salary_formats(self):
+        cases = [
+            ("Salary: 43.000 € - 52.000 €", "43.000 € - 52.000 €"),
+            ("Salary: 43,000€ - 52,000€", "43,000€ - 52,000€"),
+            ("Salary: €43,000 - €52,000", "€43,000 - €52,000"),
+            ("Salary: 43000 - 52000 EUR", "43000 - 52000 EUR"),
+            ("Salary: 43k - 52k EUR", "43k - 52k EUR"),
+            ("Salary: $100,000 - $120,000", "$100,000 - $120,000"),
+            (
+                "Salary: 100000 USD - 120000 USD per year",
+                "100000 USD - 120000 USD per year",
+            ),
+            ("Salary: £50k–£60k", "£50k–£60k"),
+            ("Salary: €50,000 — €60,000 annually", "€50,000 — €60,000 annually"),
+            ("Compensation: EUR 45 000 to 55 000 EUR", "EUR 45 000 to 55 000 EUR"),
+            ("Budget: $80k per annum", "$80k per annum"),
+        ]
+
+        for description, expected in cases:
+            with self.subTest(description=description):
+                self.assertEqual(extract_salary(description), expected)
+
+    def test_ignores_numeric_ranges_without_currency(self):
+        cases = [
+            "Candidates need 3-5 years of experience.",
+            "The service processed 43000 to 52000 requests.",
+            "Versions 100000 - 120000 are not supported.",
+            "",
+            None,
+        ]
+
+        for description in cases:
+            with self.subTest(description=description):
+                self.assertIsNone(extract_salary(description))
 
 
 class ExtractExperienceTests(unittest.TestCase):
