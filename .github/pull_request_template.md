@@ -1,23 +1,37 @@
-## Qué cambia
+## Objetivo y alcance
 
-<!-- Describe el objetivo y el comportamiento visible. -->
+<!-- Qué problema resuelve, qué cambia y qué queda deliberadamente fuera. -->
 
-## Cómo se ha validado
+## Validación
 
-- [ ] Tests de Python
-- [ ] Auditoría de dependencias Python
-- [ ] Lint de la web
-- [ ] Build de la web
-- [ ] Auditoría de dependencias npm
-- [ ] No aplica (explicado abajo)
+<!-- Marca solo lo que aplique y añade resultados o motivos de omisión. -->
 
-## Seguridad y datos
+- [ ] Suite Python y `compileall`
+- [ ] `git diff --check`
+- [ ] Web: `npm ci`, audit de producción, lint y build
+- [ ] Dependencias: audit y lockfile/manifests actualizados
+- [ ] PostgreSQL: migración y tests con `TEST_DATABASE_URL`
 
-- [ ] No se han añadido secretos, `.env`, volcados ni datos personales.
-- [ ] Las entradas externas están validadas y las consultas SQL parametrizadas.
-- [ ] Las dependencias nuevas son necesarias y el lockfile está actualizado.
-- [ ] El cambio no requiere migración o rotación de credenciales no documentada.
+## Revisiones condicionales
 
-## Notas para revisión
+### Si cambia una fuente o conector
 
-<!-- Riesgos, decisiones, migraciones o pasos manuales. -->
+- [ ] Endpoint/slug y payload validados en vivo
+- [ ] Mapping e identidad `(source, source_job_id)` cubiertos por tests sin red
+- [ ] Impacto en cierres, reactivación y snapshot protection revisado
+
+### Si cambia schema, operación o despliegue
+
+- [ ] Migración incremental incluida y orden de despliegue documentado
+- [ ] Variables, permisos y pasos manuales documentados
+- [ ] Rollback o compatibilidad hacia atrás explicados
+
+### Seguridad y documentación
+
+- [ ] No contiene secretos, `.env`, datos personales ni volcados
+- [ ] Entradas externas, URLs y SQL mantienen sus controles
+- [ ] Documentación y ejemplos reflejan el comportamiento final
+
+## Riesgos, breaking changes y pasos posteriores
+
+<!-- Incluye riesgos conocidos, acciones tras merge o escribe "Ninguno". -->
