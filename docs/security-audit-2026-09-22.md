@@ -1,5 +1,11 @@
 # Auditoría de seguridad y calidad — 22 de septiembre de 2026
 
+> **Documento histórico.** Refleja la revisión realizada el 22 de septiembre
+> de 2026, con las versiones, recuentos y limitaciones de aquel momento. No se
+> ha vuelto a ejecutar como parte de ediciones documentales posteriores. Para
+> el estado actual consulta [`README.md`](../README.md),
+> [`SECURITY.md`](../SECURITY.md) y el código de `main`.
+
 ## Resumen ejecutivo
 
 La revisión cubre el pipeline Python, la aplicación Next.js, PostgreSQL,

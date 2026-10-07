@@ -1,170 +1,204 @@
 # Job Radar
 
-Job Radar aggregates, normalizes and evaluates Data Engineering opportunities
-directly from company career sites through an automated ingestion pipeline.
-No es solo un scraper: integra múltiples ATS y portales propios, aplica reglas
-transparentes de matching, protege el ciclo de vida de las ofertas ante
-snapshots anómalos y publica los resultados en una aplicación web.
+Job Radar agrega ofertas de Data Engineering directamente desde career sites,
+las normaliza, aplica reglas de matching explícitas y mantiene su ciclo de vida
+en PostgreSQL. El resultado se consulta en una aplicación web y puede enviarse
+por correo al terminar cada ingesta.
 
-### [Abrir la aplicación →](https://job-radar-snowy.vercel.app)
+### [Abrir la demo →](https://job-radar-snowy.vercel.app)
 
-![Job Radar dashboard](docs/assets/job-radar-dashboard.png)
+![Dashboard de Job Radar](docs/assets/job-radar-dashboard.png)
 
 [![Automated Tests](https://github.com/jorgearcenic7/job-radar/actions/workflows/tests.yml/badge.svg)](https://github.com/jorgearcenic7/job-radar/actions/workflows/tests.yml)
 [![CodeQL](https://github.com/jorgearcenic7/job-radar/actions/workflows/codeql.yml/badge.svg)](https://github.com/jorgearcenic7/job-radar/actions/workflows/codeql.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-[Demo](https://job-radar-snowy.vercel.app) ·
-[Arquitectura](#arquitectura) ·
-[Matching](#criterios-de-matching) ·
-[Entorno local](#puesta-en-marcha-local) ·
-[Tests](#pruebas-y-calidad)
+[Arquitectura](docs/ARCHITECTURE.md) ·
+[Conectores](docs/CONNECTORS.md) ·
+[Operación](docs/OPERATIONS.md) ·
+[Contribuir](CONTRIBUTING.md) ·
+[Seguridad](SECURITY.md)
 
-## En un vistazo
+## Qué problema resuelve
 
-- **57 integraciones empresa/fuente configuradas** mediante Greenhouse, Ashby,
-  Workday y otros ATS, además de portales propios.
-- **Pipeline Python y persistencia PostgreSQL** con upserts idempotentes para
-  normalización, matching y seguimiento de ofertas abiertas, cerradas y
-  reactivadas.
-- **Dashboard Next.js** con búsqueda, filtros y acceso a las oportunidades
-  activas.
-- **Operación automatizada** en días alternos a las 06:00 (Europe/Madrid) con
-  GitHub Actions, observabilidad persistente por ejecución y fuente, y
-  protección frente a snapshots vacíos o anómalos.
-- **Controles de calidad automatizados** con tests, auditorías de dependencias,
-  Dependency Review y CodeQL.
+Buscar oportunidades junior o intermedias exige revisar portales con formatos
+distintos, detectar duplicados y volver a comprobar si una oferta continúa
+abierta. Job Radar automatiza ese trabajo sin ocultar la decisión:
 
-## Funcionalidades
+- consulta **70 fuentes empresa/ATS** configuradas en código;
+- convierte cada publicación a un modelo `Job` común;
+- extrae únicamente salario y experiencia realmente publicados;
+- clasifica oportunidades como `Buena coincidencia`, `Stretch` o fuera de
+  objetivo mediante reglas auditables;
+- conserva ofertas nuevas, actualizadas, cerradas y reactivadas;
+- evita cierres masivos cuando un ATS devuelve un snapshot vacío o anómalo;
+- registra métricas por ingesta y por fuente;
+- publica solo ofertas activas en una web con búsqueda y filtros.
 
-- Matching basado en puesto, seniority, experiencia requerida y señales
-  técnicas.
-- Etiquetas **Buena coincidencia** y **Stretch** para las ofertas seleccionadas.
-- Extracción de salario y experiencia cuando la empresa los publica.
-- Normalización de países sin alterar la ubicación original.
-- Notificación por correo con todas las coincidencias activas al terminar cada
-  ejecución.
-- Web con búsqueda, filtros, paginación y España seleccionada por defecto.
-
-## Arquitectura
+## Arquitectura y flujo
 
 ```mermaid
 flowchart LR
-    A[ATS y portales de empleo] --> B[Pipeline Python]
-    B --> C[Normalización y matching]
-    C --> D[(PostgreSQL / Neon)]
-    D --> E[Next.js en Vercel]
-    F[GitHub Actions] -->|Ejecución en días alternos| B
+    A[ATS y career sites] --> B[Conectores Python]
+    B --> C[Job normalizado]
+    C --> D[Matching y países]
+    D --> E[(PostgreSQL)]
+    E --> F[Next.js]
+    E --> G[Correo Resend]
+    H[GitHub Actions] --> B
 ```
 
-El pipeline conserva la descripción y la ubicación publicadas, calcula los
-campos derivados y actualiza cada oferta usando `(source, source_job_id)` como
-clave. La web solo muestra registros activos y consulta la base de datos desde
-el servidor. `main.py` es únicamente el punto de entrada; los conectores, el
-dominio, el matching, la orquestación, las notificaciones y la persistencia se
-mantienen en módulos separados bajo `job_radar/`.
+`main.py` solo delega en el orquestador. En cada ejecución:
 
-## Empresas y fuentes
+1. `job_radar/connectors/registry.py` entrega los conectores en orden.
+2. Cada conector obtiene un snapshot y devuelve objetos `Job`.
+3. El orquestador evalúa la salud del snapshot usando ejecuciones anteriores.
+4. `save_jobs()` clasifica y hace upsert por `(source, source_job_id)`.
+5. Las ofertas ausentes se cierran solo si el snapshot permite cierres; un
+   upsert posterior reactiva una oferta cerrada.
+6. `ingestion_runs` y `source_runs` conservan estado, duración, recuentos y
+   errores.
+7. Al finalizar se intenta enviar por Resend el listado de coincidencias
+   activas.
 
-| Fuente | Empresas |
+La explicación completa está en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Fuentes configuradas
+
+La tabla procede de `job_radar/connectors/registry.py`, que es la fuente de
+verdad. Una empresa puede no tener ofertas activas aunque su integración siga
+siendo válida.
+
+| Tipo | Cantidad | Empresas |
+| --- | ---: | --- |
+| Greenhouse | 28 | Typeform, N26, Stripe, Adyen, Block (incl. Afterpay), Chime, Nubank, Robinhood, SoFi, Coinbase, Datadog, Clarity AI, Fever, Cabify, Aircall, Auctane, Celonis, Taxbit, Ebury, Lynx, Monzo, Make, Awin, Blip Global, OneTrust, nCino, Affirm, Raisin |
+| Ashby | 16 | Pleo, Plaid, Qonto, Mollie, Capchase, Invopop, Airwallex, Checkout.com, Rain, Lovable, n8n, ClickHouse, Ashby, StackAI, Camunda, Supabase |
+| Workday | 5 | Mastercard, BBVA, Santander, Amadeus, AVEVA |
+| SmartRecruiters | 3 | IFS, Wise, Grab / Grab Financial Group |
+| SuccessFactors | 2 | SAP, Hexagon |
+| Lever | 1 | Paytm |
+| Deel Jobs | 1 | Klarna |
+| BambooHR | 1 | Flutterwave |
+| Eightfold | 1 | PayPal |
+| Teamtailor | 3 | Spendesk, Seedtag, Lingokids |
+| Comeet | 1 | ThetaRay |
+| iCIMS | 1 | Mambu |
+| Sage People | 1 | Sage |
+| Portales propios | 6 | Ant Group / Ant International, Deel, Revolut, CaixaBank Tech, Dassault Systèmes, Visma |
+
+Los conectores reutilizables y los portales personalizados se documentan en
+[docs/CONNECTORS.md](docs/CONNECTORS.md).
+
+## Matching y extracción
+
+Las reglas viven en `job_radar/matching/rules.py` y están orientadas a un
+perfil de Data Engineering con aproximadamente un año de experiencia:
+
+- priorizan Data Engineer, Analytics Engineer, Data Platform,
+  Data Infrastructure, Data Warehouse, ETL/ELT, DataOps y BI Engineer;
+- aceptan como `Stretch` roles técnicos adyacentes si la descripción contiene
+  suficientes señales de datos;
+- descartan prácticas, graduate/trainee, seniority alto, niveles IV o
+  superiores y requisitos mínimos de cuatro o más años;
+- aceptan ubicaciones españolas y remoto sin restricción, o remoto abierto a
+  Europa/EMEA; rechazan remotos restringidos a otras regiones conocidas;
+- conservan la ubicación original y derivan `countries` con
+  `geonamescache`.
+
+El extractor de salario exige una moneda (`€`, `$`, `£`, EUR, USD o GBP),
+acepta moneda antes o después, sufijos `k/K`, rangos y periodos publicados. El
+extractor de experiencia reconoce expresiones inglesas y españolas y filtra
+menciones que describen la antigüedad de la empresa. Ambos devuelven texto de
+la fuente: no calculan ni normalizan una cifra inexistente.
+
+## Lifecycle, snapshots y observabilidad
+
+La clave primaria de `jobs` es `(source, source_job_id)`. Cada oferta mantiene
+`first_seen_at`, `last_seen_at`, `active` y `closed_at`; reaparecer en un
+snapshot actualiza los datos, marca `active = TRUE` y limpia `closed_at`.
+
+Antes de cerrar ausentes, `job_radar/orchestration/snapshots.py` compara el recuento con
+el historial reciente. Los snapshots vacíos siempre suprimen cierres. Una
+caída grande respecto a una línea base suficiente se marca `suspicious` y
+también suprime cierres hasta que el nuevo nivel se estabiliza. Las ofertas sí
+recibidas se actualizan aun cuando los cierres estén suprimidos.
+
+Cada pipeline crea una fila en `ingestion_runs` y una por fuente en
+`source_runs`. Se guardan estados, tiempos, ofertas vistas/nuevas/cerradas,
+matches, salud del snapshot y errores. Los logs replican esas métricas con
+`run_id` y `source_run_id`.
+
+## Web y notificaciones
+
+La aplicación `web/` es un Server Component dinámico de Next.js. Consulta
+PostgreSQL desde el servidor, muestra solo ofertas activas y ofrece búsqueda
+por título, empresa, país, coincidencias y paginación de 20 resultados. España
+es el filtro inicial.
+
+La web exige `WEB_DATABASE_URL` en Vercel; fuera de Vercel admite
+`DATABASE_URL` como alternativa. El código no puede garantizar los privilegios
+del rol: usar una credencial con solo `SELECT` para la web es una obligación
+operativa, no una propiedad impuesta por la aplicación.
+
+Si `RESEND_API_KEY` está configurada, la ingesta envía un correo HTML y texto
+plano a `NOTIFICATION_EMAIL`. Incluye todas las coincidencias activas. Los
+fallos de fuentes requeridas marcan el resumen como parcial y
+`NOTIFICATION_RUN_ID` se usa como clave de idempotencia cuando existe.
+
+## Ejecución automática
+
+`.github/workflows/job-radar.yml` permite ejecución manual y programa el cron
+`0 6 */2 * *` con timezone `Europe/Madrid`: se ejecuta a las 06:00 en los días
+del mes seleccionados por `*/2`. El workflow construye la imagen Docker,
+comprueba los secretos obligatorios y ejecuta el contenedor sin privilegios,
+con filesystem de solo lectura y `/tmp` temporal.
+
+Consulta estados, diagnóstico y configuración operativa en
+[docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+## Stack verificado
+
+| Capa | Tecnología fijada o usada por el repo |
 | --- | --- |
-| Greenhouse | Typeform, N26, Stripe, Adyen, Block (incluye Afterpay), Chime, Nubank, Robinhood, SoFi, Coinbase, Datadog, Clarity AI, Fever, Cabify, Aircall, Auctane, Celonis, Taxbit, Ebury, Lynx, Monzo |
-| Ashby | Pleo, Plaid, Qonto, Mollie, Capchase, Invopop, Airwallex, Checkout.com, Rain, Lovable |
-| Workday | Mastercard, BBVA, Santander, Amadeus, AVEVA |
-| SuccessFactors | SAP, Hexagon |
-| SmartRecruiters | IFS, Wise, Grab / Grab Financial Group |
-| Lever | Paytm |
-| Deel Jobs | Deel, Klarna |
-| BambooHR | Flutterwave |
-| Eightfold | PayPal |
-| Teamtailor | Spendesk, Seedtag, Lingokids |
-| Comeet | ThetaRay |
-| iCIMS | Mambu |
-| Sage People | Sage |
-| Portales propios | Ant Group / Ant International, CaixaBank Tech, Dassault Systèmes, Revolut, Visma |
+| Pipeline | Python 3.12, Psycopg 3.3.6, curl_cffi 0.16.3, geonamescache 3.0.2 |
+| Datos | PostgreSQL 17 en Compose y CI; SQL versionado en `sql/` |
+| Web | Next.js 16.3.8, React 19.3.0, TypeScript 5.9.3, Tailwind CSS 4.3.3, node-postgres 8.23.0 |
+| Automatización | Docker, GitHub Actions, Dependabot, CodeQL y Dependency Review |
+| Despliegue web | Vercel-compatible; la demo enlazada usa un dominio `vercel.app` |
 
-La disponibilidad cambia continuamente, por lo que una empresa compatible
-puede no tener ofertas activas en un momento determinado.
+CI y `compose.web.yaml` usan Node.js 24. El repositorio no contiene la
+configuración de los recursos externos de Neon, Resend o Vercel; únicamente su
+integración mediante variables de entorno.
 
-## Criterios de matching
-
-El perfil objetivo tiene aproximadamente un año de experiencia y está
-orientado principalmente a:
-
-- Data Engineer, Analytics Engineer y BI Engineer.
-- Data Platform, Data Infrastructure y Data Warehouse Engineer.
-- ETL/ELT Engineer y DataOps Engineer.
-
-También se aceptan como *Stretch* puestos técnicos adyacentes —por ejemplo,
-Data Analyst, Data Scientist, ML/MLOps, Platform Engineer o Software Engineer—
-cuando la descripción contiene suficientes responsabilidades de datos.
-
-Se excluyen prácticas y puestos Graduate, Trainee, Senior, Staff, Principal,
-Lead, Manager, Director o Architect. También se descartan niveles IV o
-superiores y ofertas que exigen al menos cuatro años de experiencia. Se
-admiten puestos Junior, Associate, niveles I-III y requisitos de hasta tres
-años. Para marcar una oferta como coincidencia, su ubicación debe estar en
-cualquier punto de España o ser remoto sin restricción de país o abierto a
-España/Europa.
-
-Entre las señales técnicas se encuentran pipelines, ETL/ELT, modelado de
-datos, data warehouses, lakes y lakehouses, procesamiento batch o streaming,
-SQL, Python, Spark, Databricks, Airflow, dbt, Kafka, Snowflake, BigQuery,
-Redshift, Microsoft Fabric y plataformas cloud.
-
-Las reglas están implementadas en
-[`classify`](job_radar/matching/rules.py) y nunca inventan un salario o una
-experiencia que la fuente no haya publicado.
-
-## Puesta en marcha local
+## Desarrollo local
 
 ### Requisitos
 
 - Python 3.12.
-- PostgreSQL 17.
-- Node.js 24 y npm.
-- Docker y Docker Compose, opcionales para ejecutar la ingesta en contenedores.
+- PostgreSQL 17 o una instancia compatible.
+- Node.js 24 y npm para `web/`.
+- Docker y Docker Compose, opcionales.
 
-### 1. Configurar PostgreSQL
-
-Crea una base de datos local y aplica el esquema:
+### Pipeline y base de datos
 
 ```bash
-createdb job_radar
-psql job_radar < sql/001_create_jobs.sql
-psql job_radar < sql/002_add_job_lifecycle.sql
-psql job_radar < sql/003_add_ingestion_observability.sql
-psql job_radar < sql/004_add_snapshot_health.sql
-```
-
-Copia las variables de ejemplo y sustituye la contraseña por tus credenciales
-locales:
-
-```bash
-cp .env.example .env
-cp web/.env.example web/.env.local
-```
-
-`DATABASE_URL` se utiliza en la ingesta. La web usa `WEB_DATABASE_URL` y, fuera
-de Vercel, admite `DATABASE_URL` como alternativa. Ninguna de las dos debe
-llevar el prefijo `NEXT_PUBLIC_`.
-
-### 2. Ejecutar la ingesta
-
-```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
-set -a
-source .env
-set +a
-python main.py
+python3 -m pip install -r requirements.txt
+cp .env.example .env
 ```
 
-La ejecución consulta servicios externos y guarda el snapshot actual de cada
-empresa. El log muestra el tiempo total de ingesta de cada fuente, incluida la
-consulta y la escritura en base de datos, también cuando una fuente falla. Para
-ejecutar únicamente la ingesta y PostgreSQL con Docker:
+Crea una base y aplica las migraciones en orden:
+
+```bash
+psql "$DATABASE_URL" < sql/001_create_jobs.sql
+psql "$DATABASE_URL" < sql/002_add_job_lifecycle.sql
+psql "$DATABASE_URL" < sql/003_add_ingestion_observability.sql
+psql "$DATABASE_URL" < sql/004_add_snapshot_health.sql
+python3 main.py
+```
+
+Con Docker Compose:
 
 ```bash
 docker compose up -d db
@@ -175,119 +209,83 @@ docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < s
 docker compose run --rm pipeline
 ```
 
-Cada ejecución crea una fila en `ingestion_runs` y una fila por fuente en
-`source_runs`. Se registran estado, duración, ofertas vistas, nuevas y cerradas,
-coincidencias y el tipo/mensaje de error cuando corresponde. Los logs incluyen
-el `run_id` y las mismas métricas para facilitar el diagnóstico inmediato.
-Cada fuente registra además `snapshot_status` y `closure_suppressed`; los
-snapshots vacíos o sospechosos actualizan las ofertas recibidas pero no cierran
-las ausentes.
-
-### 3. Ejecutar la web
-
-Con PostgreSQL accesible mediante la URL configurada en `web/.env.local`:
+### Aplicación web
 
 ```bash
+cp web/.env.example web/.env.local
 cd web
 npm ci
 npm run dev
 ```
 
-La aplicación estará disponible en <http://localhost:3000>.
+Abre <http://localhost:3000>. La guía específica está en
+[web/README.md](web/README.md).
 
-## Notificaciones por correo
+## Tests y CI
 
-El pipeline envía mediante [Resend](https://resend.com) un correo HTML y texto
-plano después de cada ejecución. Incluye todas las coincidencias activas, su
-clasificación, empresa, ubicación, salario, experiencia y enlace original. Si
-alguna fuente falla, el asunto y el resumen indican que los resultados son
-parciales.
-
-Para activar el envío automático, crea estos secretos en **Settings → Secrets
-and variables → Actions** del repositorio:
-
-| Secreto | Valor |
-| --- | --- |
-| `RESEND_API_KEY` | API key creada en Resend (`re_...`) |
-| `NOTIFICATION_EMAIL` | Dirección que recibirá el listado |
-| `NOTIFICATION_FROM` | Remitente de un dominio verificado, opcional |
-
-Si no se configura `NOTIFICATION_FROM`, se utiliza
-`Job Radar <onboarding@resend.dev>`. Para las primeras pruebas puede usarse
-este remitente; para un envío estable se recomienda verificar un dominio en
-Resend. El workflow exige los dos primeros secretos y usa una clave de
-idempotencia por ejecución para evitar correos duplicados durante reintentos.
-
-En local, las mismas variables se pueden definir en `.env`. Si
-`RESEND_API_KEY` está vacía, el envío se omite.
-
-## Pruebas y calidad
+Validación Python local:
 
 ```bash
-python -m pip install -r requirements.txt -r requirements-dev.txt
-python -m compileall -q main.py job_radar tests
-python -m unittest discover -s tests -v
+python3 -m pip install -r requirements.txt -r requirements-dev.txt
+python3 -m pip check
+python3 -m pip_audit -r requirements.txt --strict
+python3 -m compileall -q main.py job_radar tests
+python3 -m unittest discover -s tests -v
+```
 
+Las pruebas PostgreSQL usan `TEST_DATABASE_URL`; si no está configurada se
+omiten localmente. CI levanta PostgreSQL 17 y las ejecuta.
+
+Validación web equivalente a los checks obligatorios:
+
+```bash
 cd web
 npm ci
+npm audit --omit=dev --audit-level=high
+npm audit --audit-level=high || true
 npm run lint
 npm run build
 ```
 
-Los tests unitarios cubren extracción, matching, generación segura del correo
-y conectores representativos de Greenhouse, Ashby, Workday y CaixaBank Tech.
-Los tests de ciclo de vida y del repositorio de ejecuciones requieren una base
-PostgreSQL desechable:
-
-```bash
-TEST_DATABASE_URL=postgresql://user:password@localhost:5432/job_radar_test \
-  python -m unittest tests.test_lifecycle -v
-```
-
-CI también ejecuta auditorías de dependencias de Python y npm, CodeQL y
-Dependency Review. Consulta [`CONTRIBUTING.md`](CONTRIBUTING.md) antes de abrir
-una pull request.
-
-## Stack
-
-- Python 3.12, Psycopg 3, geonamescache y curl_cffi.
-- PostgreSQL 17 en local y Neon en producción.
-- Next.js 16, React 19, TypeScript y Tailwind CSS 4.
-- Docker, GitHub Actions y Vercel.
+El audit npm completo es informativo en CI; el audit de dependencias de
+producción es el que bloquea. CI también ejecuta CodeQL para Python y
+JavaScript/TypeScript y Dependency Review en pull requests.
 
 ## Seguridad
 
-- Los secretos se proporcionan mediante variables de entorno o GitHub Secrets.
-- Producción separa la conexión de ingesta de la conexión web de solo lectura.
-- Las consultas usan parámetros y la web limita los filtros recibidos.
-- Los enlaces externos se restringen a HTTPS y la aplicación aplica una CSP
-  con nonce.
-- Los contenedores se ejecutan sin privilegios, con capacidades eliminadas y
-  filesystem de solo lectura cuando corresponde.
-- Los workflows tienen permisos mínimos y sus acciones están fijadas por SHA.
+El código usa consultas parametrizadas, restringe enlaces externos a HTTPS,
+acota filtros y paginación, aplica timeouts de PostgreSQL y envía una CSP con
+nonce desde `web/src/proxy.ts`. `web/next.config.ts` añade cabeceras HSTS,
+anti-framing, MIME sniffing, referrer y permissions policy. Los workflows
+tienen permisos explícitos mínimos y acciones fijadas por SHA.
 
-No incluyas archivos `.env`, credenciales, volcados de base de datos ni datos
-personales en el repositorio. Para informar de una vulnerabilidad, sigue
-[`SECURITY.md`](SECURITY.md). La revisión más reciente está en
-[`docs/security-audit-2026-09-22.md`](docs/security-audit-2026-09-22.md).
+Algunos controles dependen de la operación: privilegios del rol de base de
+datos, protección de ramas, configuración de Vercel/Neon, rotación de secretos
+y opciones de seguridad de GitHub no pueden demostrarse solo desde este repo.
+La separación se explica en [SECURITY.md](SECURITY.md).
 
-## Limitaciones y roadmap
+## Limitaciones reales
 
-- [x] Pipeline de ingesta dockerizado.
-- [x] Persistencia PostgreSQL con upserts idempotentes.
-- [x] Web desplegada en Vercel y base de datos Neon.
-- [x] Ejecución automatizada en días alternos.
-- [x] Matching, extracción de salario/experiencia y normalización de países.
-- [x] Detección segura de cierres y reactivaciones.
-- [x] Suite inicial de tests de conectores y ciclo de vida.
-- [x] Notificaciones por correo con el listado de coincidencias.
-- [ ] Ampliar la cobertura automatizada a todos los conectores personalizados.
-- [ ] Incorporar más empresas de producto, software y FinTech.
+- El matching es heurístico y requiere revisión humana.
+- Los ATS y career sites son dependencias externas; pueden cambiar contratos,
+  bloquear tráfico o estar temporalmente indisponibles.
+- Los conectores personalizados dependen de HTML o APIs no siempre estables.
+- No existe migrador automático: los SQL se aplican explícitamente en orden.
+- El repositorio no aprovisiona PostgreSQL, Neon, Resend ni Vercel.
+- Python fija dependencias directas, pero no mantiene un lockfile transitivo
+  con hashes.
 
-El matching sigue siendo heurístico y los ATS externos pueden cambiar sus APIs
-o su HTML sin previo aviso.
+## Documentación
+
+- [Arquitectura y modelo de ejecución](docs/ARCHITECTURE.md)
+- [Catálogo y guía de conectores](docs/CONNECTORS.md)
+- [Operación y diagnóstico](docs/OPERATIONS.md)
+- [Contribución](CONTRIBUTING.md)
+- [Política de seguridad](SECURITY.md)
+- [Auditoría histórica del 22-09-2026](docs/security-audit-2026-09-22.md)
+- [Instrucciones para agentes](AGENTS.md)
 
 ## Licencia
 
-Distribuido bajo la [Apache License 2.0](LICENSE). Consulta también
-[NOTICE](NOTICE) para la atribución del proyecto.
+Distribuido bajo la [Apache License 2.0](LICENSE). Consulta [NOTICE](NOTICE)
+para la atribución del proyecto.
