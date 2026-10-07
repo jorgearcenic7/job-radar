@@ -563,6 +563,41 @@ class WorkdayTests(unittest.TestCase):
 
 
 class NewCompanyConfigurationTests(unittest.TestCase):
+    def test_product_software_and_fintech_sources_are_configured(self):
+        greenhouse_companies = {
+            "Make": "make",
+            "Awin": "awin",
+            "Blip Global": "blip-global",
+            "OneTrust": "onetrust",
+            "nCino": "ncinoinc",
+            "Affirm": "affirm",
+            "Raisin": "raisin",
+        }
+        ashby_companies = {
+            "n8n": "n8n",
+            "ClickHouse": "clickhouse",
+            "Ashby": "ashby",
+            "StackAI": "stack-ai",
+            "Camunda": "camunda",
+            "Supabase": "supabase",
+        }
+
+        for company, slug in greenhouse_companies.items():
+            with self.subTest(company=company):
+                self.assertEqual(
+                    registry.GREENHOUSE_COMPANIES[company],
+                    slug,
+                )
+
+        for company, slug in ashby_companies.items():
+            with self.subTest(company=company):
+                self.assertEqual(registry.ASHBY_COMPANIES[company], slug)
+
+        self.assertEqual(
+            len(registry.CONNECTORS),
+            57 + len(greenhouse_companies) + len(ashby_companies),
+        )
+
     def test_requested_companies_are_configured(self):
         self.assertIn("Celonis", registry.GREENHOUSE_COMPANIES)
         self.assertIn("Lovable", registry.ASHBY_COMPANIES)
