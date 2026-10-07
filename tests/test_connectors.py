@@ -36,7 +36,7 @@ class ExtractionTests(unittest.TestCase):
         description = "Salary: €50,000 - €60,000 per year"
         self.assertEqual(
             matching.extract_salary(description),
-            "€50,000 - €60,000",
+            "€50,000 - €60,000 per year",
         )
 
     def test_experience_extraction(self):

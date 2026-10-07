@@ -83,37 +83,37 @@ def matches_target_location(location):
 
 
 def extract_salary(description):
-    patterns = [
-        (
-            r"(?:€|\$|£)\s?\d{2,3}(?:[.,]\d{3})*(?:\s?[kK])?"
-            + r"\s*(?:-|–|—|to)\s*"
-            + r"(?:€|\$|£)?\s?\d{2,3}(?:[.,]\d{3})*(?:\s?[kK])?"
-            + r"(?:\s*(?:EUR|USD|GBP))?"
-        ),
+    currency = r"(?:€|\$|£|EUR\b|USD\b|GBP\b)"
+    amount = (
+        r"(?:"
+        r"\d{1,3}(?:[., \u00a0\u202f]\d{3})+|"
+        r"\d{4,6}|"
+        r"\d{1,3}(?:[.,]\d{1,2})?\s?[kK]|"
+        r"\d{2,3}"
+        r")"
+    )
+    value = rf"(?:{currency}\s*)?{amount}(?:\s*{currency})?"
+    interval = (
+        r"(?:\s*(?:"
+        r"/(?:year|yr|annum|month|mo|hour|hr|day|week)|"
+        r"per\s+(?:year|annum|month|hour|day|week)|"
+        r"a\s+year|annually|yearly|monthly|weekly|daily|hourly|"
+        r"p\.?\s*a\.?)"
+        r")?"
+    )
+    range_pattern = (
+        rf"(?<![\d.,]){value}(?![\d.,])"
+        rf"\s*(?:[-–—]|\bto\b)\s*"
+        rf"{value}(?![\d.,]){interval}(?!\w)"
+    )
+    single_pattern = rf"(?<![\d.,]){value}(?![\d.,]){interval}(?!\w)"
 
-        (
-            r"\b\d{2,3}(?:[.,]\d{3})+\s*(?:EUR|USD|GBP)"
-            + r"\s*(?:-|–|—|to)\s*"
-            + r"\d{2,3}(?:[.,]\d{3})+\s*(?:EUR|USD|GBP)?\b"
-        ),
+    for pattern in (range_pattern, single_pattern):
+        for match in re.finditer(pattern, description or "", re.IGNORECASE):
+            salary = match.group(0).strip()
 
-        (
-            r"\b\d{2,3}\s?[kK]\s*(?:-|–|—|to)\s*"
-            + r"\d{2,3}\s?[kK]\s*(?:EUR|USD|GBP)\b"
-        ),
-
-        (
-            r"(?:€|\$|£)\s?\d{2,3}(?:[.,]\d{3})+"
-            + r"(?:\s*(?:EUR|USD|GBP))?"
-            + r"(?:\s*(?:per year|annually|a year|/year))?"
-        ),
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, description or "", re.IGNORECASE)
-
-        if match:
-            return match.group(0).strip()
+            if re.search(currency, salary, re.IGNORECASE):
+                return salary
 
     return None
 
