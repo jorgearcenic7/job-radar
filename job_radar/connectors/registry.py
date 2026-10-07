@@ -53,6 +53,13 @@ GREENHOUSE_COMPANIES = {
     "Ebury": "ebury",
     "Lynx": "lynxtech",
     "Monzo": "monzo",
+    "Make": "make",
+    "Awin": "awin",
+    "Blip Global": "blip-global",
+    "OneTrust": "onetrust",
+    "nCino": "ncinoinc",
+    "Affirm": "affirm",
+    "Raisin": "raisin",
 }
 
 ASHBY_COMPANIES = {
@@ -66,6 +73,12 @@ ASHBY_COMPANIES = {
     "Checkout.com": "checkout.com",
     "Rain": "rain",
     "Lovable": "lovable",
+    "n8n": "n8n",
+    "ClickHouse": "clickhouse",
+    "Ashby": "ashby",
+    "StackAI": "stack-ai",
+    "Camunda": "camunda",
+    "Supabase": "supabase",
 }
 
 WORKDAY_COMPANIES = {
