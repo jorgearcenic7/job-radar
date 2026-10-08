@@ -21,8 +21,9 @@ dependencias y refactors salvo que deban desplegarse juntas.
 
 ## Preparación
 
-- Python 3.12 y dependencias de `requirements.txt`.
-- Dependencias de desarrollo de `requirements-dev.txt` para `pip-audit`.
+- Python 3.12 y dependencias de `requirements-dev.lock`.
+- `requirements*.txt` declaran dependencias directas; los archivos `*.lock`
+  fijan la resolución completa con hashes.
 - Node.js 24 y `npm ci` bajo `web/` cuando aplique.
 - PostgreSQL desechable para los tests de integración.
 
@@ -35,9 +36,9 @@ Estos comandos coinciden con el job **Python tests and dependency audit** de
 `.github/workflows/tests.yml`:
 
 ```bash
-python3 -m pip install -r requirements.txt -r requirements-dev.txt
+python3 -m pip install --require-hashes -r requirements-dev.lock
 python3 -m pip check
-python3 -m pip_audit -r requirements.txt --strict
+python3 -m pip_audit -r requirements.lock --strict
 python3 scripts/update_source_catalog.py --check
 python3 -m compileall -q main.py job_radar tests scripts
 python3 -m unittest discover -s tests -v
@@ -107,10 +108,25 @@ debe aplicarse antes de desplegar código que dependa de ella.
 
 ## Dependencias
 
-Justifica cada dependencia nueva. Python fija versiones directas en
+Justifica cada dependencia nueva. Python declara versiones directas en
 `requirements*.txt`; npm usa `web/package-lock.json`. Actualiza manifest y
 lockfile juntos, ejecuta los audits correspondientes y no edites el lockfile a
 mano.
+
+Tras modificar una dependencia directa, instala `requirements-dev.lock` y
+regenera ambos locks con Python 3.12:
+
+```bash
+python3 -m piptools compile --quiet --generate-hashes --allow-unsafe \
+  --strip-extras --no-emit-index-url --no-emit-trusted-host \
+  --output-file=requirements.lock requirements.txt
+python3 -m piptools compile --quiet --generate-hashes --allow-unsafe \
+  --strip-extras --no-emit-index-url --no-emit-trusted-host \
+  --output-file=requirements-dev.lock requirements.txt requirements-dev.txt
+```
+
+Dependabot actualiza los manifests directos; regenera y adjunta los locks en
+sus pull requests antes de integrarlos.
 
 ## Seguridad
 

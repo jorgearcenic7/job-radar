@@ -168,7 +168,7 @@ integración mediante variables de entorno.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -r requirements.txt
+python3 -m pip install --require-hashes -r requirements.lock
 cp .env.example .env
 ```
 
@@ -210,9 +210,9 @@ Abre <http://localhost:3000>. La guía específica está en
 Validación Python local:
 
 ```bash
-python3 -m pip install -r requirements.txt -r requirements-dev.txt
+python3 -m pip install --require-hashes -r requirements-dev.lock
 python3 -m pip check
-python3 -m pip_audit -r requirements.txt --strict
+python3 -m pip_audit -r requirements.lock --strict
 python3 scripts/update_source_catalog.py --check
 python3 -m compileall -q main.py job_radar tests scripts
 python3 -m unittest discover -s tests -v
@@ -257,8 +257,8 @@ La separación se explica en [SECURITY.md](SECURITY.md).
 - Los conectores personalizados dependen de HTML o APIs no siempre estables.
 - No existe migrador automático: los SQL se aplican explícitamente en orden.
 - El repositorio no aprovisiona PostgreSQL, Neon, Resend ni Vercel.
-- Python fija dependencias directas, pero no mantiene un lockfile transitivo
-  con hashes.
+- Los locks Python se generan para Python 3.12; otros runtimes pueden requerir
+  una resolución distinta.
 
 ## Documentación
 
