@@ -52,10 +52,10 @@ flowchart LR
 
 1. `job_radar/connectors/registry.py` entrega los conectores en orden.
 2. Cada conector obtiene un snapshot y devuelve objetos `Job`.
-3. El orquestador evalúa la salud del snapshot usando ejecuciones anteriores.
-4. `save_jobs()` clasifica y hace upsert por `(source, source_job_id)`.
-5. Las ofertas ausentes se cierran solo si el snapshot permite cierres; un
-   upsert posterior reactiva una oferta cerrada.
+3. El orquestador prepara y clasifica cada `Job` una sola vez.
+4. Evalúa la salud del snapshot usando ejecuciones anteriores.
+5. `save_jobs()` hace el upsert sin ejecutar matching; las ofertas ausentes se
+   cierran solo si el snapshot lo permite y un upsert posterior las reactiva.
 6. `ingestion_runs` y `source_runs` conservan estado, duración, recuentos y
    errores.
 7. Al finalizar se intenta enviar por Resend el listado de coincidencias

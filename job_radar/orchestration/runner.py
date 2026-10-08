@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 
 from job_radar.connectors import CONNECTORS, Connector
-from job_radar.matching import classify
+from job_radar.matching import prepare_job
 from job_radar.notifications import send_match_notification
 from job_radar.storage import RunRepository, save_jobs
 
@@ -56,7 +56,13 @@ def process_connector(
 ) -> None:
     jobs = connector.fetch()
     metrics.jobs_seen = len(jobs)
-    metrics.matches = sum(classify(job) is not None for job in jobs)
+    prepared_jobs = []
+
+    for job in jobs:
+        prepared = prepare_job(job)
+        prepared_jobs.append(prepared)
+        metrics.matches += int(prepared.selected)
+
     history = repository.get_source_snapshot_history(
         company=connector.company,
         source=connector.source,
@@ -80,7 +86,7 @@ def process_connector(
         )
 
     metrics.jobs_new, metrics.jobs_closed = save_jobs(
-        jobs,
+        prepared_jobs,
         connector.company,
         close_missing=not assessment.closure_suppressed,
     )

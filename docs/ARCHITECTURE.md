@@ -11,8 +11,8 @@ responsabilidad operativa.
 main.py
 └── job_radar.orchestration.runner
     ├── job_radar.connectors        obtiene y normaliza snapshots
-    ├── job_radar.matching          clasifica y deriva campos
-    ├── job_radar.storage           persiste jobs y ejecuciones
+    ├── job_radar.matching          prepara, clasifica y deriva campos
+    ├── job_radar.storage           persiste datos ya preparados y ejecuciones
     ├── orchestration.snapshots     decide si se pueden cerrar ausentes
     └── job_radar.notifications     envía coincidencias activas
 
@@ -23,12 +23,13 @@ web/
 | Módulo | Responsabilidad |
 | --- | --- |
 | `main.py` | Invocar `run()` y devolver su código de salida. |
-| `domain/models.py` | Contrato normalizado `Job`. |
+| `domain/models.py` | Contratos `Job` normalizado y `PreparedJob`. |
 | `job_radar/connectors/registry.py` | Empresas, parámetros, orden y flags de ejecución. |
 | `job_radar/connectors/ats.py` | Integraciones reutilizables con ATS. |
 | `job_radar/connectors/custom.py` | Career sites que no encajan en los ATS reutilizables. |
 | `job_radar/connectors/common.py` | HTTP, reintentos, HTML a texto y conversión a `Job`. |
 | `matching/rules.py` | Ubicación, salario, experiencia, países y clasificación. |
+| `matching/preparation.py` | Convierte un `Job` en `PreparedJob`. |
 | `storage/postgres.py` | Upsert, cierres, reactivación y consulta para email. |
 | `storage/runs.py` | Persistencia de métricas por pipeline y fuente. |
 | `job_radar/orchestration/snapshots.py` | Evaluación de snapshots vacíos o anómalos. |
@@ -49,9 +50,9 @@ description, salary_text, experience_text
 
 `source_job_id` debe ser estable dentro de `source`. La base usa ambos campos
 como clave primaria; cambiar cualquiera crea una identidad distinta. Los
-conectores conservan descripción, ubicación y fragmentos publicados. Los
-países, el resultado de matching, su versión, reason codes y motivo humano se
-derivan al persistir.
+conectores conservan descripción, ubicación y fragmentos publicados.
+`prepare_job()` compone ese mismo objeto dentro de un `PreparedJob` con países,
+selección, versión, reason codes y motivo humano ya derivados.
 
 ## Flujo de una ingesta
 
@@ -63,12 +64,13 @@ derivan al persistir.
    tres intentos para timeouts, errores de conexión y HTTP 408, 429, 500, 502,
    503 o 504. Respetan `Retry-After`, aplican backoff y jitter; un 404 no se
    reintenta.
-4. Se calcula `jobs_seen`, se cuentan matches y se consulta el historial de
-   snapshots exitosos de esa empresa/fuente.
+4. El runner prepara cada `Job` una vez, calcula `jobs_seen` y `matches` con
+   esos `PreparedJob` y consulta el historial de snapshots exitosos.
 5. `evaluate_snapshot()` decide `healthy`, `suspicious` o `empty` y si debe
    suprimir cierres.
-6. `save_jobs()` vuelve a clasificar, deriva países y ejecuta upserts. Si los
-   cierres están permitidos, desactiva las identidades que faltan.
+6. `save_jobs()` recibe los valores preparados y ejecuta upserts. Si los
+   cierres están permitidos, desactiva las identidades que faltan. Storage no
+   importa ni ejecuta reglas de matching.
 7. Se finaliza `source_run` con métricas o información del error.
 8. Tras procesar fuentes recuperables, se intenta notificar las coincidencias
    activas por correo.
@@ -90,6 +92,11 @@ manualmente cuando cambia el comportamiento de clasificación. Los valores de
 texto dinámico ni localizado. `match_reason` conserva la explicación humana y
 puede cambiar de redacción sin romper ese contrato.
 
+`prepare_job()` vive en `job_radar/matching/preparation.py`: ejecuta una sola
+vez `classify()`, deriva países y devuelve el contrato de dominio `PreparedJob`.
+Esta separación mantiene el `Job` original intacto y evita que persistencia
+dependa de matching.
+
 `infer_countries()` carga países y ciudades desde `geonamescache`, prioriza
 países o códigos ISO explícitos y usa ciudad solo como fallback. La ubicación
 original nunca se reemplaza.
@@ -103,6 +110,7 @@ aportar un campo publicado por el ATS y usar los extractores como fallback.
 ### `jobs`
 
 - Clave: `(source, source_job_id)`.
+- `save_jobs()` acepta `list[PreparedJob]` y no deriva campos ni clasifica.
 - Primera aparición: inserta la oferta con `first_seen_at` y `active = TRUE`.
 - Aparición posterior: actualiza contenido y matching, mueve `last_seen_at`,
   reactiva y limpia `closed_at`.

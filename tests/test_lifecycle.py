@@ -6,8 +6,12 @@ try:
 except ModuleNotFoundError:
     psycopg = None
 
-from job_radar.domain import Job
-from job_radar.matching import MATCH_RULES_VERSION, MatchReasonCode
+from job_radar.domain import Job, PreparedJob
+from job_radar.matching import (
+    MATCH_RULES_VERSION,
+    MatchReasonCode,
+    prepare_job,
+)
 from job_radar.storage import save_jobs
 from job_radar.storage.migrations import apply_pending
 
@@ -15,6 +19,10 @@ from job_radar.storage.migrations import apply_pending
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 COMPANY = "Lifecycle Test Company"
 SOURCE = "test:connector"
+
+
+def prepare_jobs(*jobs):
+    return [prepare_job(job) for job in jobs]
 
 
 @unittest.skipUnless(
@@ -115,14 +123,14 @@ class LifecycleTests(unittest.TestCase):
         second = self.make_job("job-2", "Data Engineer II")
 
         new_count, closed_count = save_jobs(
-            [first, second],
+            prepare_jobs(first, second),
             COMPANY,
         )
         self.assertEqual((new_count, closed_count), (2, 0))
         first_seen_at, initial_last_seen_at = self.job_timestamps("job-2")
 
         new_count, closed_count = save_jobs(
-            [second],
+            prepare_jobs(second),
             COMPANY,
         )
         self.assertEqual((new_count, closed_count), (0, 1))
@@ -135,7 +143,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertIsNotNone(closed_at)
 
         new_count, closed_count = save_jobs(
-            [first, second],
+            prepare_jobs(first, second),
             COMPANY,
         )
         self.assertEqual((new_count, closed_count), (0, 0))
@@ -146,7 +154,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_empty_snapshot_does_not_close_jobs(self):
         job = self.make_job("job-safe", "Junior Data Engineer")
-        save_jobs([job], COMPANY)
+        save_jobs(prepare_jobs(job), COMPANY)
 
         result = save_jobs([], COMPANY)
         self.assertEqual(result, (0, 0))
@@ -158,10 +166,10 @@ class LifecycleTests(unittest.TestCase):
     def test_nonempty_snapshot_can_suppress_missing_job_closures(self):
         first = self.make_job("job-1", "Data Engineer I")
         second = self.make_job("job-2", "Data Engineer II")
-        save_jobs([first, second], COMPANY)
+        save_jobs(prepare_jobs(first, second), COMPANY)
 
         result = save_jobs(
-            [second],
+            prepare_jobs(second),
             COMPANY,
             close_missing=False,
         )
@@ -177,7 +185,7 @@ class LifecycleTests(unittest.TestCase):
             "Data Engineer",
             location="Madrid, Spain",
         )
-        save_jobs([job], COMPANY)
+        save_jobs(prepare_jobs(job), COMPANY)
 
         matching = self.job_matching("job-metadata")
         self.assertTrue(matching[0])
@@ -206,7 +214,7 @@ class LifecycleTests(unittest.TestCase):
                     (SOURCE, job.source_job_id),
                 )
 
-        save_jobs([job], COMPANY)
+        save_jobs(prepare_jobs(job), COMPANY)
         refreshed = self.job_matching("job-metadata")
         self.assertEqual(refreshed[3], MATCH_RULES_VERSION)
         self.assertEqual(refreshed[4], matching[4])
@@ -218,12 +226,59 @@ class LifecycleTests(unittest.TestCase):
             location="Madrid, Spain",
         )
 
-        save_jobs([job], COMPANY)
+        save_jobs(prepare_jobs(job), COMPANY)
 
         self.assertEqual(
             self.job_matching("job-rejected"),
             (False, None, None, None, None),
         )
+
+    def test_save_jobs_persists_only_prepared_values(self):
+        job = self.make_job(
+            "job-prepared",
+            "Senior Data Engineer",
+            location="London, UK",
+        )
+        prepared = PreparedJob(
+            job=job,
+            countries=("Prepared Country",),
+            selected=True,
+            match_status="Prepared status",
+            match_reason="Prepared human reason",
+            match_rules_version=999,
+            match_reason_codes=("PREPARED_REASON",),
+        )
+
+        save_jobs([prepared], COMPANY)
+
+        with psycopg.connect(TEST_DATABASE_URL) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        countries,
+                        selected,
+                        match_status,
+                        match_reason,
+                        match_rules_version,
+                        match_reason_codes
+                    FROM jobs
+                    WHERE source = %s
+                      AND source_job_id = %s
+                    """,
+                    (SOURCE, job.source_job_id),
+                )
+                self.assertEqual(
+                    cursor.fetchone(),
+                    (
+                        ["Prepared Country"],
+                        True,
+                        "Prepared status",
+                        "Prepared human reason",
+                        999,
+                        ["PREPARED_REASON"],
+                    ),
+                )
 
 
 if __name__ == "__main__":

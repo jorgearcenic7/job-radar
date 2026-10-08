@@ -2,7 +2,8 @@ import unittest
 from dataclasses import dataclass
 from unittest.mock import ANY, patch
 
-from job_radar.domain import Job
+from job_radar.domain import Job, PreparedJob
+from job_radar.matching import classify
 from job_radar.orchestration import runner
 from job_radar.storage import SourceSnapshot
 
@@ -69,6 +70,34 @@ class RecordingRunRepository:
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_each_job_is_classified_once_before_persistence(self):
+        connector = StubConnector(jobs_count=3)
+        metrics = runner.SourceMetrics()
+        repository = RecordingRunRepository()
+
+        with patch(
+            "job_radar.matching.preparation.classify",
+            wraps=classify,
+        ) as classify_spy:
+            with patch.object(
+                runner,
+                "save_jobs",
+                return_value=(3, 0),
+            ) as save_jobs:
+                runner.process_connector(connector, metrics, repository)
+
+        self.assertEqual(classify_spy.call_count, 3)
+        self.assertEqual(metrics.jobs_seen, 3)
+        self.assertEqual(metrics.matches, 3)
+        prepared_jobs = save_jobs.call_args.args[0]
+        self.assertEqual(len(prepared_jobs), 3)
+        self.assertTrue(
+            all(
+                isinstance(prepared, PreparedJob)
+                for prepared in prepared_jobs
+            )
+        )
+
     @patch("job_radar.orchestration.runner.send_match_notification")
     @patch("job_radar.orchestration.runner.save_jobs", return_value=(2, 1))
     @patch(
