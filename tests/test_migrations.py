@@ -337,6 +337,67 @@ class MigrationTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
 
+    def test_feedback_migration_upgrades_existing_jobs_schema(self):
+        feedback_migration = (
+            self.migrations_directory / "006_add_matching_feedback.sql"
+        )
+        feedback_sql = feedback_migration.read_bytes()
+        feedback_migration.unlink()
+        migrations.apply_pending(
+            self.database_url,
+            self.migrations_directory,
+        )
+        self.fetchall(
+            """
+            INSERT INTO jobs (
+                source,
+                source_job_id,
+                company,
+                title,
+                url,
+                selected,
+                match_status,
+                match_rules_version,
+                match_reason_codes
+            )
+            VALUES (
+                'greenhouse', '1', 'Example', 'Data Engineer',
+                'https://example.com/jobs/1', TRUE, 'Stretch', 1,
+                ARRAY['CORE_DATA_ROLE']
+            )
+            RETURNING source_job_id
+            """
+        )
+        feedback_migration.write_bytes(feedback_sql)
+
+        applied = migrations.apply_pending(
+            self.database_url,
+            self.migrations_directory,
+        )
+
+        self.assertEqual(
+            [migration.filename for migration in applied],
+            ["006_add_matching_feedback.sql"],
+        )
+        self.assertTrue(self.relation_exists("job_feedback"))
+        self.assertEqual(
+            self.fetchall("SELECT COUNT(*) FROM job_feedback"),
+            [(0,)],
+        )
+        self.assertEqual(
+            self.fetchall("SELECT source_job_id FROM jobs"),
+            [("1",)],
+        )
+
+        with redirect_stdout(io.StringIO()):
+            result = migrations.main(
+                ["--check"],
+                database_url=self.database_url,
+                migrations_directory=self.migrations_directory,
+            )
+
+        self.assertEqual(result, 0)
+
     def test_advisory_lock_prevents_concurrent_migrator(self):
         with psycopg.connect(
             self.database_url,
