@@ -22,7 +22,7 @@ para la idempotencia de Resend.
 
 | Variable | Consumidor | Comportamiento comprobable |
 | --- | --- | --- |
-| `DATABASE_URL` | Pipeline, migrador, health; fallback web fuera de Vercel | Conexión PostgreSQL. |
+| `DATABASE_URL` | Pipeline, migrador, health, feedback; fallback web fuera de Vercel | Conexión PostgreSQL. |
 | `WEB_DATABASE_URL` | Web | Obligatoria cuando `VERCEL=1`; preferida siempre. |
 | `RESEND_API_KEY` | Pipeline | Sin ella la notificación local se omite; el workflow la exige. |
 | `NOTIFICATION_EMAIL` | Pipeline | Requerida si hay API key y por el workflow. |
@@ -181,6 +181,40 @@ El primer comando lista todas las fuentes; `--problems` limita la salida a
 `required` incumple el SLO. Tras cada ingesta, el correo existente incluye una
 sección compacta solo cuando hay fuentes `required` `unhealthy`; no se envía un
 segundo mensaje.
+
+## Feedback de relevancia
+
+El feedback mide qué parte de las recomendaciones mostradas resulta
+relevante, por versión de reglas, estado y reason code. No mide recall. Se
+gestiona solo con `DATABASE_URL`; la web sigue siendo read-only y su rol no
+necesita privilegios sobre `job_feedback`.
+
+Requiere la migración `006`. En una base existente, aplícala manualmente antes
+del primer uso:
+
+```bash
+python3 scripts/migrate.py --status
+python3 scripts/migrate.py
+python3 scripts/migrate.py --check
+```
+
+Flujo habitual:
+
+```bash
+python3 scripts/job_feedback.py pending --limit 20
+python3 scripts/job_feedback.py rate --source greenhouse --job-id 12345 --relevance relevant
+python3 scripts/job_feedback.py rate --source greenhouse --job-id 12345 --relevance not_relevant
+python3 scripts/job_feedback.py report
+python3 scripts/job_feedback.py report --rules-version 1
+```
+
+`pending` lista ofertas activas seleccionadas sin valoración para su versión
+actual, con `source` y `job_id`. `rate` valora la versión con la que la oferta
+está clasificada ahora y copia su estado y reason codes; repetirlo cambia la
+valoración sin duplicarla. Falla con código 1 si la oferta no existe, no fue
+seleccionada o no tiene metadata versionada. `report` muestra totales y tasas
+siempre junto al tamaño de muestra (`relevant/labeled`); ordena los reason
+codes por número de falsos positivos.
 
 ## Diagnosticar una fuente rota
 

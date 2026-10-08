@@ -20,6 +20,7 @@ enviar coincidencias por Resend.
 | Snapshot protection | `job_radar/orchestration/snapshots.py` |
 | Ejecución, errores y estados | `job_radar/orchestration/runner.py` |
 | Salud operativa de fuentes | `job_radar/observability/health.py` |
+| Feedback de relevancia | `job_radar/storage/feedback.py`, `scripts/job_feedback.py` |
 | Correo | `job_radar/notifications/` |
 | Schema y migraciones | `sql/` |
 | Aplicación web | `web/` |
@@ -56,6 +57,10 @@ Next.js son específicas y no se duplican aquí.
 - El flujo es `Job` normalizado → `prepare_job()` → `PreparedJob` → storage.
   La preparación clasifica y deriva países; `job_radar/storage/` nunca debe
   importar ni ejecutar lógica de `job_radar/matching/`.
+- `job_feedback` mide la precisión de recomendaciones mostradas, versionada por
+  `MATCH_RULES_VERSION`; no mide recall. Se escribe solo con tooling operativo
+  y `DATABASE_URL`, nunca desde la web. La ingesta no debe leerlo ni depender
+  de él, y no se crea feedback automáticamente ni para históricos.
 - Evita dependencias nuevas si la biblioteca estándar o una dependencia actual
   resuelve el problema. Actualiza manifests y lockfiles juntos cuando aplique.
 - Una decisión arquitectónica significativa puede requerir un ADR en

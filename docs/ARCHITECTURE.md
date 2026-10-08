@@ -18,6 +18,9 @@ main.py
     ├── orchestration.snapshots     decide si se pueden cerrar ausentes
     └── job_radar.notifications     envía coincidencias activas
 
+scripts/job_feedback.py
+└── job_radar.storage.feedback     registra y agrega feedback, fuera de la ingesta
+
 web/
 └── Server Component Next.js ───── consulta PostgreSQL directamente
 ```
@@ -26,6 +29,7 @@ web/
 | --- | --- |
 | `main.py` | Invocar `run()` y devolver su código de salida. |
 | `domain/models.py` | Contratos `Job` normalizado y `PreparedJob`. |
+| `domain/feedback.py` | Contratos de feedback de relevancia y su informe. |
 | `job_radar/connectors/registry.py` | Empresas, parámetros, orden y flags de ejecución. |
 | `job_radar/connectors/ats.py` | Integraciones reutilizables con ATS. |
 | `job_radar/connectors/custom.py` | Career sites que no encajan en los ATS reutilizables. |
@@ -34,6 +38,7 @@ web/
 | `matching/preparation.py` | Convierte un `Job` en `PreparedJob`. |
 | `storage/postgres.py` | Upsert, cierres, reactivación y consulta para email. |
 | `storage/runs.py` | Persistencia de métricas por pipeline y fuente. |
+| `storage/feedback.py` | Registro, pendientes e informe del feedback de relevancia. |
 | `observability/health.py` | Health histórico y SLO de los conectores. |
 | `job_radar/orchestration/snapshots.py` | Evaluación de snapshots vacíos o anómalos. |
 | `job_radar/orchestration/runner.py` | Coordinación secuencial, estados, logs y notificación. |
@@ -147,6 +152,36 @@ ofertas.
 Los umbrales pertenecen a `job_radar/orchestration/snapshots.py`; esta documentación no
 debe sustituir su lectura antes de cambiarlos.
 
+## Feedback de relevancia
+
+`job_feedback` guarda valoraciones manuales `relevant` o `not_relevant` de las
+recomendaciones que Job Radar mostró. Mide la precisión de las ofertas
+seleccionadas; no mide recall, porque las ofertas rechazadas no se revisan.
+
+- La clave primaria `(source, source_job_id, match_rules_version)` admite como
+  máximo una valoración por oferta y versión de `MATCH_RULES_VERSION`. Repetirla
+  con la misma versión actualiza `relevance` y `updated_at`; una versión nueva
+  recibe una valoración independiente.
+- La FK a `jobs (source, source_job_id)` usa `ON DELETE RESTRICT`. El lifecycle
+  no borra ofertas, así que cierres y reactivaciones no alteran el feedback.
+- Solo se aceptan ofertas con `selected = TRUE` y metadata versionada. Las filas
+  históricas sin `match_rules_version` no se valoran hasta reingestarse. Nunca
+  se crea feedback automáticamente.
+- `match_status` y `match_reason_codes` se copian al valorar y no cambian si la
+  oferta se reclasifica después. `match_reason` no se copia: es texto humano y
+  el análisis usa reason codes.
+
+`FeedbackRepository` es la única API de escritura y lectura del feedback; la
+usa `scripts/job_feedback.py` con `DATABASE_URL`. Runner, `save_jobs()`,
+matching y notificaciones no leen ni escriben `job_feedback`: la ingesta nunca
+depende de él.
+
+El informe agrega todas las valoraciones o una sola versión. Cada valoración
+cuenta una vez en el total, su versión y su estado, y una vez por cada reason
+code que contenía; los desgloses por reason code no suman el total. Los
+desgloses por estado o reason code mezclan versiones salvo que se filtre por
+una.
+
 ## Observabilidad y semántica de errores
 
 `ingestion_runs` resume toda la ejecución. `source_runs` conserva empresa,
@@ -194,7 +229,8 @@ Un run puede ser `partial` aunque la fuente fallida sea opcional. El flag
 `web/src/app/page.tsx` fuerza render dinámico y ejecuta consultas parametrizadas
 mediante el pool de `web/src/lib/db.ts`. Solo lee `jobs.active = TRUE`, limita
 la página a 20 filas, acota filtros a 120 caracteres y la página solicitada a
-500. No existe una API intermedia en el repo.
+500. No existe una API intermedia en el repo. La web no lee ni escribe
+`job_feedback`; el feedback se gestiona con tooling operativo.
 
 En Vercel, `WEB_DATABASE_URL` es obligatoria. El código no emite escrituras,
 pero tampoco puede convertir una credencial PostgreSQL en read-only: los
