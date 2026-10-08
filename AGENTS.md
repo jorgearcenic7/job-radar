@@ -48,6 +48,9 @@ Next.js son específicas y no se duplican aquí.
   cambio que altere decisiones de matching debe incrementarla. Los reason
   codes son un contrato machine-readable estable: no los reutilices con otro
   significado. `match_reason` es texto humano y puede evolucionar.
+- El flujo es `Job` normalizado → `prepare_job()` → `PreparedJob` → storage.
+  La preparación clasifica y deriva países; `job_radar/storage/` nunca debe
+  importar ni ejecutar lógica de `job_radar/matching/`.
 - Evita dependencias nuevas si la biblioteca estándar o una dependencia actual
   resuelve el problema. Actualiza manifests y lockfiles juntos cuando aplique.
 - Trabaja en una rama y mediante PR. No hagas push directo a `main`.

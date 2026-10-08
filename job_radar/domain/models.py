@@ -4,7 +4,7 @@ from typing import Any, Mapping
 
 @dataclass(slots=True)
 class Job:
-    """Normalized job posting shared by connectors and persistence."""
+    """Normalized job posting produced by connectors."""
 
     source: str
     source_job_id: str
@@ -29,3 +29,16 @@ class Job:
             salary_text=value["salary_text"],
             experience_text=value["experience_text"],
         )
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedJob:
+    """Normalized job plus values derived before persistence."""
+
+    job: Job
+    countries: tuple[str, ...]
+    selected: bool
+    match_status: str | None
+    match_reason: str | None
+    match_rules_version: int | None
+    match_reason_codes: tuple[str, ...] | None

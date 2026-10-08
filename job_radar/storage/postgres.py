@@ -2,8 +2,7 @@ import logging
 import os
 from typing import Any
 
-from job_radar.domain import Job
-from job_radar.matching import classify, infer_countries
+from job_radar.domain import PreparedJob
 
 
 LOGGER = logging.getLogger(__name__)
@@ -47,21 +46,21 @@ def get_active_matches() -> list[dict[str, Any]]:
 
 
 def save_jobs(
-    jobs: list[Job],
+    prepared_jobs: list[PreparedJob],
     company: str,
     *,
     close_missing: bool = True,
 ) -> tuple[int, int]:
     import psycopg
 
-    if not jobs:
+    if not prepared_jobs:
         LOGGER.warning(
             "empty_snapshot_protected company=%r jobs_closed=0",
             company,
         )
         return 0, 0
 
-    sources = {job.source for job in jobs}
+    sources = {prepared.job.source for prepared in prepared_jobs}
 
     if len(sources) != 1:
         raise ValueError(
@@ -69,7 +68,10 @@ def save_jobs(
         )
 
     source = next(iter(sources))
-    current_ids = {job.source_job_id for job in jobs}
+    current_ids = {
+        prepared.job.source_job_id
+        for prepared in prepared_jobs
+    }
 
     sql = """
         INSERT INTO jobs (
@@ -138,8 +140,8 @@ def save_jobs(
 
             new_count = len(current_ids - existing_ids)
 
-            for job in jobs:
-                result = classify(job)
+            for prepared in prepared_jobs:
+                job = prepared.job
 
                 cursor.execute(
                     sql,
@@ -149,22 +151,18 @@ def save_jobs(
                         job.company,
                         job.title,
                         job.location,
-                        infer_countries(job.location),
+                        list(prepared.countries),
                         job.url,
                         job.description,
                         job.salary_text,
                         job.experience_text,
-                        result is not None,
-                        result.status if result else None,
+                        prepared.selected,
+                        prepared.match_status,
+                        prepared.match_reason,
+                        prepared.match_rules_version,
                         (
-                            f"{result.level}: {result.reason}"
-                            if result
-                            else None
-                        ),
-                        result.rules_version if result else None,
-                        (
-                            [code.value for code in result.reason_codes]
-                            if result
+                            list(prepared.match_reason_codes)
+                            if prepared.match_reason_codes is not None
                             else None
                         ),
                     ),
