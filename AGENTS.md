@@ -91,7 +91,7 @@ Si cambian dependencias Python:
 
 ```bash
 python3 -m pip check
-python3 -m pip_audit -r requirements.txt --strict
+python3 -m pip_audit -r requirements.lock --strict
 ```
 
 Si cambia `web/` o su documentación técnica:
