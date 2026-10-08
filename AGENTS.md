@@ -58,6 +58,9 @@ Next.js son específicas y no se duplican aquí.
   importar ni ejecutar lógica de `job_radar/matching/`.
 - Evita dependencias nuevas si la biblioteca estándar o una dependencia actual
   resuelve el problema. Actualiza manifests y lockfiles juntos cuando aplique.
+- Una decisión arquitectónica significativa puede requerir un ADR en
+  `docs/adr/`. Un ADR aceptado no se reescribe para reflejar una decisión
+  nueva: se crea otro que lo sustituya.
 - Trabaja en una rama y mediante PR. No hagas push directo a `main`.
 
 ## Añadir una fuente
