@@ -7,6 +7,7 @@ except ModuleNotFoundError:
     psycopg = None
 
 from job_radar.domain import Job
+from job_radar.matching import MATCH_RULES_VERSION, MatchReasonCode
 from job_radar.storage import save_jobs
 from job_radar.storage.migrations import apply_pending
 
@@ -49,13 +50,13 @@ class LifecycleTests(unittest.TestCase):
                     (COMPANY,),
                 )
 
-    def make_job(self, job_id, title):
+    def make_job(self, job_id, title, location=None):
         return Job(
             source=SOURCE,
             source_job_id=job_id,
             company=COMPANY,
             title=title,
-            location=None,
+            location=location,
             url=f"https://example.com/jobs/{job_id}",
             description="Python, SQL and data pipelines",
             salary_text=None,
@@ -82,6 +83,25 @@ class LifecycleTests(unittest.TestCase):
                 cursor.execute(
                     """
                     SELECT first_seen_at, last_seen_at
+                    FROM jobs
+                    WHERE source = %s
+                      AND source_job_id = %s
+                    """,
+                    (SOURCE, job_id),
+                )
+                return cursor.fetchone()
+
+    def job_matching(self, job_id):
+        with psycopg.connect(TEST_DATABASE_URL) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        selected,
+                        match_status,
+                        match_reason,
+                        match_rules_version,
+                        match_reason_codes
                     FROM jobs
                     WHERE source = %s
                       AND source_job_id = %s
@@ -150,6 +170,60 @@ class LifecycleTests(unittest.TestCase):
         active, closed_at = self.job_state("job-1")
         self.assertTrue(active)
         self.assertIsNone(closed_at)
+
+    def test_matching_metadata_is_persisted_and_refreshed(self):
+        job = self.make_job(
+            "job-metadata",
+            "Data Engineer",
+            location="Madrid, Spain",
+        )
+        save_jobs([job], COMPANY)
+
+        matching = self.job_matching("job-metadata")
+        self.assertTrue(matching[0])
+        self.assertEqual(matching[1], "Buena coincidencia")
+        self.assertIsNotNone(matching[2])
+        self.assertEqual(matching[3], MATCH_RULES_VERSION)
+        self.assertEqual(
+            matching[4],
+            [
+                MatchReasonCode.CORE_DATA_ROLE.value,
+                MatchReasonCode.EXPERIENCE_COMPATIBLE.value,
+                MatchReasonCode.STRONG_DATA_SIGNALS.value,
+            ],
+        )
+
+        with psycopg.connect(TEST_DATABASE_URL) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE jobs
+                    SET match_rules_version = 0,
+                        match_reason_codes = ARRAY['STALE']::TEXT[]
+                    WHERE source = %s
+                      AND source_job_id = %s
+                    """,
+                    (SOURCE, job.source_job_id),
+                )
+
+        save_jobs([job], COMPANY)
+        refreshed = self.job_matching("job-metadata")
+        self.assertEqual(refreshed[3], MATCH_RULES_VERSION)
+        self.assertEqual(refreshed[4], matching[4])
+
+    def test_rejected_job_has_explicit_null_matching_metadata(self):
+        job = self.make_job(
+            "job-rejected",
+            "Senior Data Engineer",
+            location="Madrid, Spain",
+        )
+
+        save_jobs([job], COMPANY)
+
+        self.assertEqual(
+            self.job_matching("job-rejected"),
+            (False, None, None, None, None),
+        )
 
 
 if __name__ == "__main__":

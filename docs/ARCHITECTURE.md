@@ -50,7 +50,8 @@ description, salary_text, experience_text
 `source_job_id` debe ser estable dentro de `source`. La base usa ambos campos
 como clave primaria; cambiar cualquiera crea una identidad distinta. Los
 conectores conservan descripción, ubicación y fragmentos publicados. Los
-países, el resultado de matching y su motivo se derivan al persistir.
+países, el resultado de matching, su versión, reason codes y motivo humano se
+derivan al persistir.
 
 ## Flujo de una ingesta
 
@@ -76,11 +77,18 @@ países, el resultado de matching y su motivo se derivan al persistir.
 
 ## Matching y datos derivados
 
-`classify(job)` devuelve `(status, level, reason)` o `None`. Primero exige una
+`classify(job)` devuelve un `MatchResult` tipado o `None`. El resultado contiene
+`status`, `level`, `reason`, `reason_codes` y `rules_version`. Primero exige una
 ubicación compatible, descarta niveles no objetivo y requisitos mínimos de
-cuatro o más años, identifica la familia del rol y cuenta señales técnicas.
-Los roles core pueden ser `Buena coincidencia` o `Stretch`; los roles
-adyacentes aceptados siempre son `Stretch`.
+cuatro o más años, identifica la familia del rol y cuenta señales técnicas. Los
+roles core pueden ser `Buena coincidencia` o `Stretch`; los roles adyacentes
+aceptados siempre son `Stretch`.
+
+`MATCH_RULES_VERSION` vive en `job_radar/matching/rules.py` y se incrementa
+manualmente cuando cambia el comportamiento de clasificación. Los valores de
+`MatchReasonCode` son el contrato machine-readable para analítica; no contienen
+texto dinámico ni localizado. `match_reason` conserva la explicación humana y
+puede cambiar de redacción sin romper ese contrato.
 
 `infer_countries()` carga países y ciudades desde `geonamescache`, prioriza
 países o códigos ISO explícitos y usa ciudad solo como fallback. La ubicación
@@ -98,6 +106,9 @@ aportar un campo publicado por el ATS y usar los extractores como fallback.
 - Primera aparición: inserta la oferta con `first_seen_at` y `active = TRUE`.
 - Aparición posterior: actualiza contenido y matching, mueve `last_seen_at`,
   reactiva y limpia `closed_at`.
+- `match_rules_version` y `match_reason_codes` identifican las reglas y motivos
+  estables de la última clasificación; permanecen `NULL` en históricos hasta
+  que se vuelven a procesar y en ofertas que `classify()` rechaza.
 - Ausencia en un snapshot sano: marca `active = FALSE` y fija `closed_at`.
 - Snapshot vacío: `save_jobs()` devuelve sin cerrar nada como segunda defensa,
   además de la protección del orquestador.

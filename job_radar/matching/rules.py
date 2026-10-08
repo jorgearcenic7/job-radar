@@ -1,7 +1,36 @@
 import re
 import unicodedata
+from dataclasses import dataclass
+from enum import StrEnum
 
 from job_radar.domain import Job
+
+
+MATCH_RULES_VERSION = 1
+
+
+class MatchReasonCode(StrEnum):
+    CORE_DATA_ROLE = "CORE_DATA_ROLE"
+    TECHNICAL_DATA_ANALYST = "TECHNICAL_DATA_ANALYST"
+    TECHNICAL_ML_ROLE = "TECHNICAL_ML_ROLE"
+    DATA_HEAVY_ADJACENT_ROLE = "DATA_HEAVY_ADJACENT_ROLE"
+    EXPERIENCE_COMPATIBLE = "EXPERIENCE_COMPATIBLE"
+    THREE_YEARS_STRETCH = "THREE_YEARS_STRETCH"
+    MID_LEVEL_STRETCH = "MID_LEVEL_STRETCH"
+    LEVEL_III_STRETCH = "LEVEL_III_STRETCH"
+    JUNIOR_LEVEL = "JUNIOR_LEVEL"
+    LEVEL_I_II = "LEVEL_I_II"
+    LEVEL_UNSPECIFIED = "LEVEL_UNSPECIFIED"
+    STRONG_DATA_SIGNALS = "STRONG_DATA_SIGNALS"
+
+
+@dataclass(frozen=True, slots=True)
+class MatchResult:
+    status: str
+    level: str
+    reason: str
+    reason_codes: tuple[MatchReasonCode, ...]
+    rules_version: int
 
 
 _COUNTRY_ALIASES = None
@@ -257,7 +286,7 @@ def required_experience_years(experience_text):
     return None
 
 
-def classify(job: Job):
+def classify(job: Job) -> MatchResult | None:
     """
     JOB RADAR - REGLAS GLOBALES DE COINCIDENCIA
 
@@ -542,9 +571,11 @@ def classify(job: Job):
 
     role_type = None
     reason = None
+    reason_codes = []
 
     if core_data_role:
         role_type = "core"
+        reason_codes.append(MatchReasonCode.CORE_DATA_ROLE)
 
         reason = (
             "Rol directamente alineado "
@@ -559,6 +590,9 @@ def classify(job: Job):
             or technical_count >= 2
         ):
             role_type = "analyst"
+            reason_codes.append(
+                MatchReasonCode.TECHNICAL_DATA_ANALYST
+            )
 
             reason = (
                 "Data Analyst con contenido "
@@ -574,6 +608,7 @@ def classify(job: Job):
             or strong_data_count >= 1
         ):
             role_type = "ml"
+            reason_codes.append(MatchReasonCode.TECHNICAL_ML_ROLE)
 
             reason = (
                 "Data Science / ML con "
@@ -588,6 +623,9 @@ def classify(job: Job):
         # realmente hay mucho Data Engineering.
         if strong_data_count >= 3:
             role_type = "adjacent"
+            reason_codes.append(
+                MatchReasonCode.DATA_HEAVY_ADJACENT_ROLE
+            )
 
             reason = (
                 f"Rol de ingeniería con "
@@ -667,6 +705,23 @@ def classify(job: Job):
             "stretch razonable"
         )
 
+        if years == 3:
+            reason_codes.append(
+                MatchReasonCode.THREE_YEARS_STRETCH
+            )
+
+        if re.search(
+            r"\b(?:engineer\s+iii|level\s*3|iii)\b",
+            title,
+        ):
+            reason_codes.append(
+                MatchReasonCode.LEVEL_III_STRETCH
+            )
+        elif mid_level:
+            reason_codes.append(
+                MatchReasonCode.MID_LEVEL_STRETCH
+            )
+
     # Core Data + experiencia <= 2.
     elif (
         years is not None
@@ -678,6 +733,9 @@ def classify(job: Job):
             f"Experiencia compatible: "
             f"{years} año(s)"
         )
+        reason_codes.append(
+            MatchReasonCode.EXPERIENCE_COMPATIBLE
+        )
 
     # Core Data explícitamente Junior / I / II.
     elif junior_level or level_i_ii:
@@ -688,6 +746,12 @@ def classify(job: Job):
             "compatible"
         )
 
+        if junior_level:
+            reason_codes.append(MatchReasonCode.JUNIOR_LEVEL)
+
+        if level_i_ii:
+            reason_codes.append(MatchReasonCode.LEVEL_I_II)
+
     # Data Engineer sin nivel ni años:
     # lo mostramos, pero no asumimos que sea junior.
     else:
@@ -697,6 +761,7 @@ def classify(job: Job):
             "Rol muy alineado, "
             "pero nivel no especificado"
         )
+        reason_codes.append(MatchReasonCode.LEVEL_UNSPECIFIED)
 
     # =========================================================
     # 10. MOTIVO
@@ -705,6 +770,7 @@ def classify(job: Job):
     details = [reason]
 
     if strong_data_count:
+        reason_codes.append(MatchReasonCode.STRONG_DATA_SIGNALS)
         details.append(
             f"{strong_data_count} señales "
             "fuertes de Data Engineering"
@@ -716,10 +782,12 @@ def classify(job: Job):
             f"{experience_text}"
         )
 
-    return (
-        status,
-        level,
-        " | ".join(details),
+    return MatchResult(
+        status=status,
+        level=level,
+        reason=" | ".join(details),
+        reason_codes=tuple(reason_codes),
+        rules_version=MATCH_RULES_VERSION,
     )
 
 
