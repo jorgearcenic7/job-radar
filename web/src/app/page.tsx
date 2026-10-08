@@ -456,7 +456,7 @@ export default async function Home({
             </div>
           )}
 
-          {totalResults > 0 && totalPages > 1 && (
+          {totalPages > 1 && (
             <nav
               className="mt-8 flex items-center justify-center gap-4"
               aria-label="Paginación de ofertas"

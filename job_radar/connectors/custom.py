@@ -991,9 +991,7 @@ def fetch_teamtailor_company(
                 schema_salary(schema)
                 or extract_salary(description)
             ),
-            "experience_text": (
-                extract_experience(description)
-            ),
+            "experience_text": extract_experience(description),
         })
 
     return _as_jobs(result)
@@ -1013,8 +1011,6 @@ def fetch_lingokids():
         base_url="https://jobs.lingokids.com",
         source="teamtailor:lingokids",
     )
-
-
 
 
 def fetch_caixabank_tech():
@@ -1128,9 +1124,7 @@ def fetch_caixabank_tech():
             else page_text
         )
 
-        source_job_id = (
-            url.rstrip("/").rsplit("/", 1)[-1]
-        )
+        source_job_id = url.rstrip("/").rsplit("/", 1)[-1]
 
         jobs.append({
             "source": "caixabank-tech:careers",
@@ -1141,29 +1135,22 @@ def fetch_caixabank_tech():
             "url": url,
             "description": description,
             "salary_text": extract_salary(description),
-            "experience_text": extract_experience(
-                description
-            ),
+            "experience_text": extract_experience(description),
         })
 
     return _as_jobs(jobs)
 
+
 def revolut_slug(title):
-    value = unicodedata.normalize(
-        "NFKD",
-        title,
-    ).encode(
-        "ascii",
-        "ignore",
-    ).decode("ascii")
+    value = (
+        unicodedata.normalize("NFKD", title)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
 
     value = value.lower()
 
-    return re.sub(
-        r"[^a-z0-9]+",
-        "-",
-        value,
-    ).strip("-")
+    return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
 
 
 def revolut_locations(position):
@@ -1231,13 +1218,9 @@ def fetch_revolut():
     )
 
     if not next_match:
-        raise ValueError(
-            "Revolut: __NEXT_DATA__ no encontrado"
-        )
+        raise ValueError("Revolut: __NEXT_DATA__ no encontrado")
 
-    next_data = json.loads(
-        next_match.group(1)
-    )
+    next_data = json.loads(next_match.group(1))
 
     build_id = next_data.get("buildId")
     locale = next_data.get("locale") or "en-GB"
@@ -1250,14 +1233,10 @@ def fetch_revolut():
     )
 
     if not build_id:
-        raise ValueError(
-            "Revolut: buildId no encontrado"
-        )
+        raise ValueError("Revolut: buildId no encontrado")
 
     if not positions:
-        raise ValueError(
-            "Revolut: listado de ofertas vacío"
-        )
+        raise ValueError("Revolut: listado de ofertas vacío")
 
     LOGGER.info(
         "listing_fetched company='Revolut' source=revolut jobs_seen=%s",
@@ -1281,9 +1260,7 @@ def fetch_revolut():
     candidates = [
         position
         for position in positions
-        if interesting_title.search(
-            position.get("text") or ""
-        )
+        if interesting_title.search(position.get("text") or "")
     ]
 
     LOGGER.info(
@@ -1295,43 +1272,25 @@ def fetch_revolut():
     enriched = 0
     failures = 0
 
-    candidate_ids = {
-        str(position.get("id"))
-        for position in candidates
-    }
+    candidate_ids = {str(position.get("id")) for position in candidates}
 
     for position in positions:
-        job_id = str(
-            position.get("id") or ""
-        ).strip()
-
-        title = (
-            position.get("text") or ""
-        ).strip()
+        job_id = str(position.get("id") or "").strip()
+        title = (position.get("text") or "").strip()
 
         if not job_id or not title:
             continue
 
         slug = revolut_slug(title)
-
-        identifier = (
-            f"{slug}-{job_id}"
-        )
-
+        identifier = f"{slug}-{job_id}"
         public_url = (
             "https://www.revolut.com/"
             "careers/position/"
             f"{identifier}/"
         )
-
         description = ""
 
-        # ====================================================
-        # DESCARGAR DETALLE SOLO SI EL TÍTULO PUEDE INTERESAR
-        # ====================================================
-
         if job_id in candidate_ids:
-
             detail_url = (
                 "https://www.revolut.com/"
                 f"_next/data/{build_id}/"
@@ -1347,44 +1306,27 @@ def fetch_revolut():
                     context="company='Revolut' source=revolut",
                     impersonate="chrome",
                     headers={
-                        "Accept-Language":
-                            "en-GB,en;q=0.9",
-                        "Referer":
-                            careers_url,
-                        "X-Nextjs-Data":
-                            "1",
+                        "Accept-Language": "en-GB,en;q=0.9",
+                        "Referer": careers_url,
+                        "X-Nextjs-Data": "1",
                     },
                     timeout=JSON_TIMEOUT_SECONDS,
                 )
 
-                detail_json = (
-                    detail_response.json()
-                )
-
+                detail_json = detail_response.json()
                 detail_position = (
                     detail_json
                     .get("pageProps", {})
                     .get("position", {})
                 )
-
                 description = plain_text(
-                    detail_position.get(
-                        "description"
-                    )
-                    or ""
+                    detail_position.get("description") or ""
                 )
 
-                # Si el detalle tiene localizaciones,
-                # usamos esas.
-                if detail_position.get(
-                    "locations"
-                ):
+                if detail_position.get("locations"):
                     position = {
                         **position,
-                        "locations":
-                            detail_position[
-                                "locations"
-                            ],
+                        "locations": detail_position["locations"],
                     }
 
                 enriched += 1
@@ -1400,34 +1342,15 @@ def fetch_revolut():
                 )
 
         result.append({
-            "source":
-                "revolut:careers",
-
-            "source_job_id":
-                job_id,
-
-            "company":
-                "Revolut",
-
-            "title":
-                title,
-
-            "location":
-                revolut_locations(position),
-
-            "url":
-                public_url,
-
-            "description":
-                description,
-
-            "salary_text":
-                extract_salary(description),
-
-            "experience_text":
-                extract_experience(
-                    description
-                ),
+            "source": "revolut:careers",
+            "source_job_id": job_id,
+            "company": "Revolut",
+            "title": title,
+            "location": revolut_locations(position),
+            "url": public_url,
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": extract_experience(description),
         })
 
     LOGGER.info(
