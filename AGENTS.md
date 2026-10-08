@@ -37,8 +37,9 @@ Next.js son específicas y no se duplican aquí.
 - No rompas cierre/reactivación: un job visto queda activo; uno ausente solo se
   cierra cuando snapshot protection lo permite.
 - No conviertas un snapshot vacío o sospechoso en cierres masivos.
-- Mantén SQL parametrizado. Una migración nueva debe ser incremental,
-  idempotente cuando sea viable y añadirse después del último número en `sql/`.
+- Mantén SQL parametrizado. Todo cambio de schema requiere una migración nueva,
+  incremental y posterior al último número en `sql/`; nunca edites una
+  migración histórica aplicada, porque su checksum es inmutable.
 - No añadas secretos, `.env`, datos personales ni credenciales. La web debe
   seguir usando variables server-side sin prefijo `NEXT_PUBLIC_`.
 - Conserva la semántica de fuentes `required`, opcionales y `catch_all`; revisa

@@ -1,6 +1,5 @@
 import os
 import unittest
-from pathlib import Path
 
 try:
     import psycopg
@@ -8,6 +7,7 @@ except ModuleNotFoundError:
     psycopg = None
 
 from job_radar.storage import RunRepository
+from job_radar.storage.migrations import apply_pending
 
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -20,15 +20,7 @@ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 class RunRepositoryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        migrations = [
-            Path("sql/003_add_ingestion_observability.sql").read_text(),
-            Path("sql/004_add_snapshot_health.sql").read_text(),
-        ]
-
-        with psycopg.connect(TEST_DATABASE_URL) as connection:
-            with connection.cursor() as cursor:
-                for migration in migrations:
-                    cursor.execute(migration)
+        apply_pending(TEST_DATABASE_URL)
 
     def setUp(self):
         self.repository = RunRepository(TEST_DATABASE_URL)

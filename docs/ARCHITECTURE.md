@@ -35,7 +35,8 @@ web/
 | `job_radar/orchestration/runner.py` | Coordinación secuencial, estados, logs y notificación. |
 | `notifications/email.py` | Render HTML/texto y llamada a Resend. |
 | `web/src/app/page.tsx` | Consulta y render server-side del dashboard. |
-| `sql/` | Schema y migraciones aplicadas manualmente en orden. |
+| `sql/` | Schema y migraciones ordenadas, aplicadas por el migrador. |
+| `job_radar/storage/migrations.py` | Tracking, checksums, transacciones y advisory lock. |
 
 ## Contrato normalizado
 
@@ -160,13 +161,12 @@ solo si su esquema es HTTPS.
 
 ## Schema
 
-Los SQL se aplican en orden:
+`scripts/migrate.py` descubre los SQL numerados, valida su checksum contra
+`schema_migrations` y aplica solo los pendientes. Cada fichero y su registro se
+confirman en una transacción; un advisory lock evita ejecuciones concurrentes.
+El pipeline de producción no invoca el migrador automáticamente.
 
-1. `sql/001_create_jobs.sql`
-2. `sql/002_add_job_lifecycle.sql`
-3. `sql/003_add_ingestion_observability.sql`
-4. `sql/004_add_snapshot_health.sql`
-
-No hay herramienta de migración ni ejecución automática de estos ficheros. Un
-entorno nuevo necesita los cuatro; un cambio de schema debe añadir una
-migración nueva sin reescribir la historia aplicada.
+Un entorno nuevo ejecuta todas las migraciones. Una base existente sin tracking
+requiere el baseline explícito documentado en
+[OPERATIONS.md](OPERATIONS.md#base-existente-sin-tracking). Todo cambio de
+schema añade una migración nueva sin reescribir la historia aplicada.

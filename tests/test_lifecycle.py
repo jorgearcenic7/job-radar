@@ -1,6 +1,5 @@
 import os
 import unittest
-from pathlib import Path
 
 try:
     import psycopg
@@ -9,6 +8,7 @@ except ModuleNotFoundError:
 
 from job_radar.domain import Job
 from job_radar.storage import save_jobs
+from job_radar.storage.migrations import apply_pending
 
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -26,11 +26,7 @@ class LifecycleTests(unittest.TestCase):
         cls.previous_database_url = os.environ.get("DATABASE_URL")
         os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
-        schema = Path("sql/001_create_jobs.sql").read_text()
-
-        with psycopg.connect(TEST_DATABASE_URL) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(schema)
+        apply_pending(TEST_DATABASE_URL)
 
     @classmethod
     def tearDownClass(cls):

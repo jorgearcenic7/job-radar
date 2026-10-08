@@ -92,6 +92,15 @@ jobs:
       - name: Check generated source catalog
         run: python scripts/update_source_catalog.py --check
 
+      - name: Verify database migration commands
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: |
+          python scripts/migrate.py
+          python scripts/migrate.py --status
+          python scripts/migrate.py --check
+          python scripts/migrate.py
+
       - name: Run automated tests
         run: python -m unittest discover -s tests -v
 

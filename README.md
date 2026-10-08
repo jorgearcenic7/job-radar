@@ -172,24 +172,24 @@ python3 -m pip install --require-hashes -r requirements.lock
 cp .env.example .env
 ```
 
-Crea una base y aplica las migraciones en orden:
+Crea una base, exporta su URL y aplica las migraciones pendientes:
 
 ```bash
-psql "$DATABASE_URL" < sql/001_create_jobs.sql
-psql "$DATABASE_URL" < sql/002_add_job_lifecycle.sql
-psql "$DATABASE_URL" < sql/003_add_ingestion_observability.sql
-psql "$DATABASE_URL" < sql/004_add_snapshot_health.sql
+export DATABASE_URL=postgresql://job_radar:password@localhost:5432/job_radar
+python3 scripts/migrate.py
+python3 scripts/migrate.py --check
 python3 main.py
 ```
+
+Una base que ya tenga las migraciones históricas necesita el baseline manual
+descrito en [docs/OPERATIONS.md](docs/OPERATIONS.md#base-existente-sin-tracking).
 
 Con Docker Compose:
 
 ```bash
 docker compose up -d db
-docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < sql/001_create_jobs.sql
-docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < sql/002_add_job_lifecycle.sql
-docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < sql/003_add_ingestion_observability.sql
-docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < sql/004_add_snapshot_health.sql
+docker compose run --rm -e DATABASE_URL="host=db" \
+  pipeline python scripts/migrate.py
 docker compose run --rm pipeline
 ```
 
@@ -255,7 +255,8 @@ La separación se explica en [SECURITY.md](SECURITY.md).
 - Los ATS y career sites son dependencias externas; pueden cambiar contratos,
   bloquear tráfico o estar temporalmente indisponibles.
 - Los conectores personalizados dependen de HTML o APIs no siempre estables.
-- No existe migrador automático: los SQL se aplican explícitamente en orden.
+- Las migraciones se ejecutan manualmente antes del despliegue; el pipeline no
+  las aplica automáticamente.
 - El repositorio no aprovisiona PostgreSQL, Neon, Resend ni Vercel.
 - Los locks Python se generan para Python 3.12; otros runtimes pueden requerir
   una resolución distinta.
