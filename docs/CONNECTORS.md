@@ -1,31 +1,91 @@
 # Conectores y fuentes
 
 `job_radar/connectors/registry.py` es la fuente de verdad para empresas,
-parámetros, orden y flags. El registro actual contiene 70 conectores.
+parámetros, orden y flags.
 
 ## Catálogo
 
-| Implementación | Empresas |
-| --- | --- |
-| Greenhouse (`fetch_greenhouse`) | Typeform, N26, Stripe, Adyen, Block (incl. Afterpay), Chime, Nubank, Robinhood, SoFi, Coinbase, Datadog, Clarity AI, Fever, Cabify, Aircall, Auctane, Celonis, Taxbit, Ebury, Lynx, Monzo, Make, Awin, Blip Global, OneTrust, nCino, Affirm, Raisin |
-| Ashby (`fetch_ashby`) | Pleo, Plaid, Qonto, Mollie, Capchase, Invopop, Airwallex, Checkout.com, Rain, Lovable, n8n, ClickHouse, Ashby, StackAI, Camunda, Supabase |
-| Workday (`fetch_workday`) | Mastercard, BBVA, Santander, Amadeus, AVEVA |
-| SmartRecruiters (`fetch_smartrecruiters`) | IFS, Wise, Grab / Grab Financial Group |
-| SuccessFactors (`fetch_successfactors`) | SAP, Hexagon |
-| Lever (`fetch_lever`) | Paytm |
-| Deel Jobs (`fetch_deel_company`) | Klarna |
-| BambooHR (`fetch_bamboohr`) | Flutterwave |
-| Eightfold (`fetch_eightfold`) | PayPal |
-| Teamtailor | Spendesk, Seedtag, Lingokids |
-| Comeet | ThetaRay |
-| iCIMS | Mambu |
-| Sage People | Sage |
-| Portales propios | Ant Group / Ant International, Deel, Revolut, CaixaBank Tech, Dassault Systèmes, Visma |
+<!-- BEGIN GENERATED SOURCE CATALOG -->
+El registro actual contiene **70 fuentes**.
 
-Los primeros nueve tipos se configuran mediante diccionarios y `_configured`.
-Los doce conectores del bloque final de `CONNECTORS` llaman funciones de
-`job_radar/connectors/custom.py`; algunos reutilizan internamente patrones del proveedor, pero no
-comparten un registro genérico.
+| Empresa | Tipo / `source` | Modo | `catch_all` |
+| --- | --- | --- | --- |
+| Typeform | `greenhouse` | required | no |
+| N26 | `greenhouse` | required | no |
+| Stripe | `greenhouse` | required | no |
+| Adyen | `greenhouse` | required | no |
+| Block (incl. Afterpay) | `greenhouse` | required | no |
+| Chime | `greenhouse` | required | no |
+| Nubank | `greenhouse` | required | no |
+| Robinhood | `greenhouse` | required | no |
+| SoFi | `greenhouse` | required | no |
+| Coinbase | `greenhouse` | required | no |
+| Datadog | `greenhouse` | required | no |
+| Clarity AI | `greenhouse` | required | no |
+| Fever | `greenhouse` | required | no |
+| Cabify | `greenhouse` | required | no |
+| Aircall | `greenhouse` | required | no |
+| Auctane | `greenhouse` | required | no |
+| Celonis | `greenhouse` | required | no |
+| Taxbit | `greenhouse` | required | no |
+| Ebury | `greenhouse` | required | no |
+| Lynx | `greenhouse` | required | no |
+| Monzo | `greenhouse` | required | no |
+| Make | `greenhouse` | required | no |
+| Awin | `greenhouse` | required | no |
+| Blip Global | `greenhouse` | required | no |
+| OneTrust | `greenhouse` | required | no |
+| nCino | `greenhouse` | required | no |
+| Affirm | `greenhouse` | required | no |
+| Raisin | `greenhouse` | required | no |
+| Pleo | `ashby` | required | no |
+| Plaid | `ashby` | required | no |
+| Qonto | `ashby` | required | no |
+| Mollie | `ashby` | required | no |
+| Capchase | `ashby` | required | no |
+| Invopop | `ashby` | required | no |
+| Airwallex | `ashby` | required | no |
+| Checkout.com | `ashby` | required | no |
+| Rain | `ashby` | required | no |
+| Lovable | `ashby` | required | no |
+| n8n | `ashby` | required | no |
+| ClickHouse | `ashby` | required | no |
+| Ashby | `ashby` | required | no |
+| StackAI | `ashby` | required | no |
+| Camunda | `ashby` | required | no |
+| Supabase | `ashby` | required | no |
+| Mastercard | `workday` | required | no |
+| BBVA | `workday` | required | no |
+| Santander | `workday` | required | no |
+| Amadeus | `workday` | required | no |
+| AVEVA | `workday` | required | no |
+| IFS | `smartrecruiters` | required | no |
+| Wise | `smartrecruiters` | required | no |
+| Grab / Grab Financial Group | `smartrecruiters` | required | no |
+| Paytm | `lever` | required | no |
+| Klarna | `deel` | required | no |
+| Flutterwave | `bamboohr` | required | no |
+| PayPal | `eightfold` | required | no |
+| SAP | `successfactors` | required | no |
+| Hexagon | `successfactors` | required | no |
+| Ant Group / Ant International | `portal propio` | required | sí |
+| Spendesk | `teamtailor` | required | sí |
+| ThetaRay | `comeet` | required | sí |
+| Deel | `portal propio` | required | sí |
+| Mambu | `icims` | required | sí |
+| Seedtag | `teamtailor` | required | sí |
+| Lingokids | `teamtailor` | required | sí |
+| Revolut | `portal propio` | opcional | sí |
+| CaixaBank Tech | `portal propio` | required | sí |
+| Dassault Systèmes | `portal propio` | required | sí |
+| Visma | `portal propio` | required | sí |
+| Sage | `sagepeople` | required | sí |
+<!-- END GENERATED SOURCE CATALOG -->
+
+Las fuentes configuradas mediante diccionarios y `_configured` reutilizan los
+fetchers de ATS. El bloque final de `CONNECTORS` llama funciones de
+`job_radar/connectors/custom.py`; algunas reutilizan internamente patrones del
+proveedor, pero no comparten un registro genérico.
 
 ## Cuándo reutilizar y cuándo crear custom
 
@@ -90,10 +150,10 @@ que `source_runs` registre el error y no se ejecuten cierres para esa fuente.
 - Las fuentes creadas por `_configured` son requeridas y no usan `catch_all`.
   Errores HTTP/red y errores de datos esperados se registran y permiten seguir;
   una excepción inesperada detiene el pipeline.
-- Los conectores custom actuales usan `catch_all=True`, por lo que cualquier
-  `Exception` se registra por fuente y el pipeline continúa.
-- Revolut es la única fuente `required=False`. Su fallo deja el run `partial`,
-  pero no activa salida bloqueante ni el aviso parcial del correo.
+- `catch_all=True` hace que cualquier `Exception` se registre por fuente y que
+  el pipeline continúe.
+- `required=False` deja el run `partial` ante un fallo, pero no activa salida
+  bloqueante ni el aviso parcial del correo.
 
 Consulta la tabla completa de resultados en
 [ARCHITECTURE.md](ARCHITECTURE.md#observabilidad-y-semántica-de-errores).

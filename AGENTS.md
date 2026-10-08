@@ -57,7 +57,8 @@ Next.js son específicas y no se duplican aquí.
    existente sirve y el cambio lo pide explícitamente.
 5. Valida el mapping a `Job`, incluida una identidad estable y URL HTTPS.
 6. Añade tests sin llamadas reales a Internet.
-7. Ejecuta toda la suite y revisa el impacto en lifecycle y snapshots.
+7. Regenera el catálogo con `python3 scripts/update_source_catalog.py`.
+8. Ejecuta toda la suite y revisa el impacto en lifecycle y snapshots.
 
 La guía detallada está en `docs/CONNECTORS.md`.
 
@@ -80,7 +81,8 @@ La guía detallada está en `docs/CONNECTORS.md`.
 Para cualquier cambio Python o documental con referencias técnicas:
 
 ```bash
-python3 -m compileall -q main.py job_radar tests
+python3 scripts/update_source_catalog.py --check
+python3 -m compileall -q main.py job_radar tests scripts
 python3 -m unittest discover -s tests -v
 git diff --check
 ```

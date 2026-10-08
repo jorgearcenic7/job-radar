@@ -38,7 +38,8 @@ Estos comandos coinciden con el job **Python tests and dependency audit** de
 python3 -m pip install -r requirements.txt -r requirements-dev.txt
 python3 -m pip check
 python3 -m pip_audit -r requirements.txt --strict
-python3 -m compileall -q main.py job_radar tests
+python3 scripts/update_source_catalog.py --check
+python3 -m compileall -q main.py job_radar tests scripts
 python3 -m unittest discover -s tests -v
 ```
 
@@ -87,6 +88,9 @@ Antes de modificar código:
 No conviertas un error HTTP o payload incompatible en `[]`: un falso snapshot
 vacío oculta la causa y puede alterar la operación. La guía completa está en
 [docs/CONNECTORS.md](docs/CONNECTORS.md).
+
+Después de cambiar `CONNECTORS`, ejecuta
+`python3 scripts/update_source_catalog.py` para actualizar el catálogo.
 
 ## Schema y persistencia
 

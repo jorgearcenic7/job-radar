@@ -25,7 +25,7 @@ Buscar oportunidades junior o intermedias exige revisar portales con formatos
 distintos, detectar duplicados y volver a comprobar si una oferta continúa
 abierta. Job Radar automatiza ese trabajo sin ocultar la decisión:
 
-- consulta **70 fuentes empresa/ATS** configuradas en código;
+- consulta las fuentes empresa/ATS configuradas en código;
 - convierte cada publicación a un modelo `Job` común;
 - extrae únicamente salario y experiencia realmente publicados;
 - clasifica oportunidades como `Buena coincidencia`, `Stretch` o fuera de
@@ -65,28 +65,12 @@ La explicación completa está en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Fuentes configuradas
 
-La tabla procede de `job_radar/connectors/registry.py`, que es la fuente de
-verdad. Una empresa puede no tener ofertas activas aunque su integración siga
-siendo válida.
+<!-- BEGIN GENERATED SOURCE CATALOG -->
+Job Radar consulta **70 fuentes empresa/ATS** configuradas en código.
+<!-- END GENERATED SOURCE CATALOG -->
 
-| Tipo | Cantidad | Empresas |
-| --- | ---: | --- |
-| Greenhouse | 28 | Typeform, N26, Stripe, Adyen, Block (incl. Afterpay), Chime, Nubank, Robinhood, SoFi, Coinbase, Datadog, Clarity AI, Fever, Cabify, Aircall, Auctane, Celonis, Taxbit, Ebury, Lynx, Monzo, Make, Awin, Blip Global, OneTrust, nCino, Affirm, Raisin |
-| Ashby | 16 | Pleo, Plaid, Qonto, Mollie, Capchase, Invopop, Airwallex, Checkout.com, Rain, Lovable, n8n, ClickHouse, Ashby, StackAI, Camunda, Supabase |
-| Workday | 5 | Mastercard, BBVA, Santander, Amadeus, AVEVA |
-| SmartRecruiters | 3 | IFS, Wise, Grab / Grab Financial Group |
-| SuccessFactors | 2 | SAP, Hexagon |
-| Lever | 1 | Paytm |
-| Deel Jobs | 1 | Klarna |
-| BambooHR | 1 | Flutterwave |
-| Eightfold | 1 | PayPal |
-| Teamtailor | 3 | Spendesk, Seedtag, Lingokids |
-| Comeet | 1 | ThetaRay |
-| iCIMS | 1 | Mambu |
-| Sage People | 1 | Sage |
-| Portales propios | 6 | Ant Group / Ant International, Deel, Revolut, CaixaBank Tech, Dassault Systèmes, Visma |
-
-Los conectores reutilizables y los portales personalizados se documentan en
+`job_radar/connectors/registry.py` es la fuente de verdad. El catálogo detallado
+de empresas, tipos y flags se genera en
 [docs/CONNECTORS.md](docs/CONNECTORS.md).
 
 ## Matching y extracción
@@ -229,7 +213,8 @@ Validación Python local:
 python3 -m pip install -r requirements.txt -r requirements-dev.txt
 python3 -m pip check
 python3 -m pip_audit -r requirements.txt --strict
-python3 -m compileall -q main.py job_radar tests
+python3 scripts/update_source_catalog.py --check
+python3 -m compileall -q main.py job_radar tests scripts
 python3 -m unittest discover -s tests -v
 ```
 
