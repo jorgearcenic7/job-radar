@@ -94,6 +94,7 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
     )
     args = parser.parse_args(argv)
 
+    changes: list[Path] = []
     try:
         changes = update_documents(root, check=args.check)
     except (OSError, ValueError) as error:
