@@ -95,7 +95,9 @@ Después de cambiar `CONNECTORS`, ejecuta
 
 ## Schema y persistencia
 
-- Añade un SQL numerado nuevo en `sql/`; no reescribas una migración aplicada.
+- Todo cambio de schema exige un SQL numerado nuevo después de la última
+  versión de `sql/`. No edites una migración aplicada: el migrador comprueba su
+  checksum SHA-256 y rechazará el drift.
 - Usa consultas parametrizadas y transacciones explícitas mediante Psycopg.
 - Mantén la clave `(source, source_job_id)` y los invariantes de cierre y
   reactivación.
@@ -103,8 +105,10 @@ Después de cambiar `CONNECTORS`, ejecuta
   pasos operativos.
 - Describe en la PR el orden de despliegue y cualquier paso manual.
 
-El repositorio no ejecuta migraciones automáticamente. Una migración necesaria
-debe aplicarse antes de desplegar código que dependa de ella.
+Prueba una migración en PostgreSQL con `python3 scripts/migrate.py`; usa
+`--status` para inspeccionar y `--check` para exigir que no haya pendientes.
+El repositorio no migra producción automáticamente: una migración necesaria
+debe aplicarse manualmente antes de desplegar código que dependa de ella.
 
 ## Dependencias
 

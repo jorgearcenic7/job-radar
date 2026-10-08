@@ -22,7 +22,7 @@ para la idempotencia de Resend.
 
 | Variable | Consumidor | Comportamiento comprobable |
 | --- | --- | --- |
-| `DATABASE_URL` | Pipeline; fallback web fuera de Vercel | Conexión PostgreSQL. |
+| `DATABASE_URL` | Pipeline, migrador; fallback web fuera de Vercel | Conexión PostgreSQL. |
 | `WEB_DATABASE_URL` | Web | Obligatoria cuando `VERCEL=1`; preferida siempre. |
 | `RESEND_API_KEY` | Pipeline | Sin ella la notificación local se omite; el workflow la exige. |
 | `NOTIFICATION_EMAIL` | Pipeline | Requerida si hay API key y por el workflow. |
@@ -35,15 +35,47 @@ están ignorados; solo se versionan los ejemplos.
 
 ## Preparar PostgreSQL
 
-El repo no aprovisiona Neon ni ejecuta migraciones automáticamente. Aplica los
-SQL versionados en orden:
+El repo no aprovisiona Neon ni ejecuta migraciones automáticamente. Para una
+base nueva, el migrador descubre `sql/*.sql`, crea `schema_migrations` y aplica
+solo las pendientes en orden:
 
 ```bash
-psql "$DATABASE_URL" < sql/001_create_jobs.sql
-psql "$DATABASE_URL" < sql/002_add_job_lifecycle.sql
-psql "$DATABASE_URL" < sql/003_add_ingestion_observability.sql
-psql "$DATABASE_URL" < sql/004_add_snapshot_health.sql
+python3 scripts/migrate.py
+python3 scripts/migrate.py --status
+python3 scripts/migrate.py --check
 ```
+
+Cada migración y su registro se confirman en la misma transacción. La tabla
+guarda versión, filename, checksum SHA-256 y `applied_at`. Un checksum distinto
+o un historial incompleto detienen el comando. Un advisory lock impide dos
+migradores simultáneos; si ya está ocupado, el segundo falla sin esperar.
+
+Si no existe tracking pero el schema ya contiene tablas, el modo normal se
+niega a ejecutar SQL y exige revisar si corresponde hacer baseline.
+
+### Base existente sin tracking
+
+La base de producción ya tiene `001`–`004` aplicadas manualmente. Tras revisar
+que esas cuatro migraciones corresponden exactamente a su schema, previsualiza
+la operación única:
+
+```bash
+python3 scripts/migrate.py --baseline 004
+```
+
+Ese comando muestra lo que registraría, termina con error y no modifica la
+base. Solo después de revisar la lista, confirma explícitamente:
+
+```bash
+python3 scripts/migrate.py --baseline 004 --confirm-baseline
+python3 scripts/migrate.py --check
+```
+
+El baseline no ejecuta `001`–`004`, no inspecciona objetos para inferir su
+estado y no debe usarse en una base nueva. Registra únicamente el prefijo hasta
+la versión indicada; se rechaza si no hay tablas existentes o si
+`schema_migrations` ya contiene filas. Haz backup y prueba primero con una copia
+restaurada de producción.
 
 Para un servicio gestionado como Neon se necesitan, fuera del repo:
 
@@ -69,9 +101,11 @@ docker compose up -d db
 docker compose run --rm pipeline
 ```
 
-El `Dockerfile` usa Python 3.12, instala dependencias directas y ejecuta con UID
-10001. Compose y GitHub Actions añaden filesystem de solo lectura, `/tmp`
-temporal, capacidades eliminadas y `no-new-privileges`.
+El `Dockerfile` usa Python 3.12, instala el lock de producción y ejecuta con UID
+10001. Incluye el migrador para invocarlo manualmente; ni el entrypoint ni el
+workflow programado lo ejecutan. Compose y GitHub Actions añaden filesystem de
+solo lectura, `/tmp` temporal, capacidades eliminadas y
+`no-new-privileges`.
 
 `compose.web.yaml` monta el código local y expone el dev server solo en
 `127.0.0.1:3000`. Está pensado para desarrollo, no como manifiesto de

@@ -15,6 +15,8 @@ RUN useradd --create-home --uid 10001 appuser
 
 COPY --chown=appuser:appuser main.py .
 COPY --chown=appuser:appuser job_radar ./job_radar
+COPY --chown=appuser:appuser scripts/migrate.py ./scripts/migrate.py
+COPY --chown=appuser:appuser sql ./sql
 
 USER appuser
 
