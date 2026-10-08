@@ -5,6 +5,7 @@ from unittest.mock import ANY, patch
 from job_radar.domain import Job, PreparedJob
 from job_radar.matching import classify
 from job_radar.orchestration import runner
+from job_radar.observability import HEALTH_WINDOW
 from job_radar.storage import SourceSnapshot
 
 
@@ -44,6 +45,8 @@ class RecordingRunRepository:
         self.source_finishes = []
         self.ingestion_finish = None
         self.snapshot_history = snapshot_history or []
+        self.health_history = {}
+        self.health_limit = None
 
     def create_ingestion_run(self, sources_total):
         self.sources_total = sources_total
@@ -64,6 +67,10 @@ class RecordingRunRepository:
 
     def get_source_snapshot_history(self, *, company, source, limit):
         return self.snapshot_history[:limit]
+
+    def get_recent_source_runs(self, *, limit):
+        self.health_limit = limit
+        return self.health_history
 
     def finish_ingestion_run(self, run_id, **values):
         self.ingestion_finish = {"id": run_id, **values}
@@ -152,7 +159,15 @@ class OrchestrationTests(unittest.TestCase):
             "Example",
             close_missing=True,
         )
-        send_match_notification.assert_called_once_with(partial=False)
+        send_match_notification.assert_called_once()
+        notification = send_match_notification.call_args.kwargs
+        self.assertFalse(notification["partial"])
+        self.assertEqual(repository.health_limit, HEALTH_WINDOW)
+        self.assertEqual(len(notification["source_health"]), 1)
+        self.assertEqual(
+            notification["source_health"][0].health_status,
+            "unknown",
+        )
         output = "\n".join(logs.output)
         self.assertIn("run_id=100", output)
         self.assertIn("company='Example'", output)
@@ -216,7 +231,10 @@ class OrchestrationTests(unittest.TestCase):
             },
         )
         save_jobs.assert_called_once()
-        send_match_notification.assert_called_once_with(partial=True)
+        send_match_notification.assert_called_once_with(
+            partial=True,
+            source_health=ANY,
+        )
 
     @patch("job_radar.orchestration.runner.send_match_notification")
     def test_optional_source_failure_is_partial_but_exit_remains_zero(
@@ -236,7 +254,10 @@ class OrchestrationTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(repository.ingestion_finish["status"], "partial")
-        send_match_notification.assert_called_once_with(partial=False)
+        send_match_notification.assert_called_once_with(
+            partial=False,
+            source_health=ANY,
+        )
 
     @patch("job_radar.orchestration.runner.send_match_notification")
     def test_fatal_failure_finalizes_run_before_propagating(

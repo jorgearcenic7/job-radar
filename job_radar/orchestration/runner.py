@@ -6,6 +6,7 @@ from urllib.error import HTTPError, URLError
 from job_radar.connectors import CONNECTORS, Connector
 from job_radar.matching import prepare_job
 from job_radar.notifications import send_match_notification
+from job_radar.observability import HEALTH_WINDOW, build_source_health
 from job_radar.storage import RunRepository, save_jobs
 
 from .snapshots import SNAPSHOT_HISTORY_LIMIT, evaluate_snapshot
@@ -224,7 +225,12 @@ def run(run_repository: RunRepository | None = None) -> int:
                 )
 
         try:
-            send_match_notification(partial=blocking_failure)
+            histories = repository.get_recent_source_runs(limit=HEALTH_WINDOW)
+            source_health = build_source_health(CONNECTORS, histories)
+            send_match_notification(
+                partial=blocking_failure,
+                source_health=source_health,
+            )
         except Exception as error:
             blocking_failure = True
             notification_failed = True

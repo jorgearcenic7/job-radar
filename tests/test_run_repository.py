@@ -185,6 +185,43 @@ class RunRepositoryTests(unittest.TestCase):
         self.assertEqual(history[0].snapshot_status, "suspicious")
         self.assertTrue(history[0].closure_suppressed)
 
+    def test_recent_source_runs_returns_completed_history_newest_first(self):
+        run_id = self.repository.create_ingestion_run(3)
+        self.run_ids.append(run_id)
+
+        source_run_ids = [
+            self.repository.create_source_run(
+                run_id,
+                company="Health Example",
+                source="test:health",
+            )
+            for _index in range(3)
+        ]
+        for index, source_run_id in enumerate(source_run_ids):
+            failed = index == 2
+            self.repository.finish_source_run(
+                source_run_id,
+                status="failed" if failed else "success",
+                jobs_seen=1,
+                jobs_new=0,
+                jobs_closed=0,
+                matches=0,
+                duration_ms=10,
+                error_type="TimeoutError" if failed else None,
+                error_message="upstream timeout" if failed else None,
+            )
+
+        histories = self.repository.get_recent_source_runs(limit=1)
+        history = histories[("Health Example", "test:health")]
+
+        # The most recent success is retained beyond the metric window so the
+        # health model can always report when this source last worked.
+        self.assertEqual(len(history), 2)
+        self.assertEqual([run.status for run in history], ["failed", "success"])
+        self.assertEqual(history[0].error_type, "TimeoutError")
+        self.assertEqual(history[0].error_message, "upstream timeout")
+        self.assertIsNotNone(history[0].finished_at)
+
 
 if __name__ == "__main__":
     unittest.main()

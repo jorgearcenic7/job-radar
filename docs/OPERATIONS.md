@@ -22,7 +22,7 @@ para la idempotencia de Resend.
 
 | Variable | Consumidor | Comportamiento comprobable |
 | --- | --- | --- |
-| `DATABASE_URL` | Pipeline, migrador; fallback web fuera de Vercel | Conexión PostgreSQL. |
+| `DATABASE_URL` | Pipeline, migrador, health; fallback web fuera de Vercel | Conexión PostgreSQL. |
 | `WEB_DATABASE_URL` | Web | Obligatoria cuando `VERCEL=1`; preferida siempre. |
 | `RESEND_API_KEY` | Pipeline | Sin ella la notificación local se omite; el workflow la exige. |
 | `NOTIFICATION_EMAIL` | Pipeline | Requerida si hay API key y por el workflow. |
@@ -102,10 +102,10 @@ docker compose run --rm pipeline
 ```
 
 El `Dockerfile` usa Python 3.12, instala el lock de producción y ejecuta con UID
-10001. Incluye el migrador para invocarlo manualmente; ni el entrypoint ni el
-workflow programado lo ejecutan. Compose y GitHub Actions añaden filesystem de
-solo lectura, `/tmp` temporal, capacidades eliminadas y
-`no-new-privileges`.
+10001. Incluye el migrador y el comando de health para invocarlos manualmente;
+el entrypoint y el workflow programado no los ejecutan por separado. Compose y
+GitHub Actions añaden filesystem de solo lectura, `/tmp` temporal, capacidades
+eliminadas y `no-new-privileges`.
 
 `compose.web.yaml` monta el código local y expone el dev server solo en
 `127.0.0.1:3000`. Está pensado para desarrollo, no como manifiesto de
@@ -144,15 +144,56 @@ Los logs emiten eventos `ingestion_run_started`, `source_run_finished`,
 `snapshot_closure_suppressed`, `http_retry`, `notification_sent` y los errores
 correspondientes. Usa `run_id` y `source_run_id` para correlacionarlos.
 
+### Salud histórica y SLO de conectores
+
+El estado `success`/`partial`/`failed` describe una ingesta concreta. Connector
+health resume el historial reciente de cada fuente y se calcula al consultar
+`source_runs`; no se persiste en una tabla adicional. `snapshot_status`
+describe la integridad de un snapshot y no cuenta automáticamente como fallo
+HTTP o del conector.
+
+La ventana contiene las últimas diez ejecuciones completadas de cada fuente:
+
+- `unknown`: no existe historial completado;
+- `healthy`: el último run fue correcto y la tasa de éxito es al menos 90 %;
+- `degraded`: hay un fallo reciente aislado o la tasa está entre 70 % y menos
+  de 90 %;
+- `unhealthy`: hay dos o más fallos consecutivos, o una ventana completa tiene
+  menos de 70 % de éxito.
+
+Una tasa baja con menos de diez muestras queda `degraded`, salvo que ya haya
+dos fallos consecutivos. El SLO operativo de Job Radar —no una garantía del
+proveedor externo— exige que cada fuente `required` tenga al menos 90 % de
+éxito en sus últimas diez ejecuciones. Se considera incumplido con una ventana
+completa por debajo del 90 % o anticipadamente con dos fallos consecutivos.
+Una fuente opcional siempre queda fuera del incumplimiento global.
+
+Con `DATABASE_URL` configurada:
+
+```bash
+python3 scripts/source_health.py
+python3 scripts/source_health.py --problems
+python3 scripts/source_health.py --check
+```
+
+El primer comando lista todas las fuentes; `--problems` limita la salida a
+`degraded`/`unhealthy`; `--check` termina distinto de cero si una fuente
+`required` incumple el SLO. Tras cada ingesta, el correo existente incluye una
+sección compacta solo cuando hay fuentes `required` `unhealthy`; no se envía un
+segundo mensaje.
+
 ## Diagnosticar una fuente rota
 
-1. Localiza su último `source_run` y el error exacto.
-2. Reproduce el endpoint con el mismo slug/tenant y User-Agent cuando aplique.
-3. Comprueba status, redirects, content type y estructura antes de editar.
-4. Contrasta el career site oficial: el slug o proveedor pueden haber cambiado.
-5. Ejecuta el fetcher manualmente sin persistir si necesitas validar mapping.
-6. Añade un test de regresión mockeado antes de corregir el código.
-7. Revisa si el último snapshot suprimió cierres y que no haya cierres masivos.
+1. Ejecuta `python3 scripts/source_health.py --problems` y revisa tasa, fallos
+   consecutivos y último error.
+2. Localiza sus últimos `source_runs`, incluida la última ejecución correcta,
+   y distingue el fallo del estado del snapshot.
+3. Reproduce el endpoint con el mismo slug/tenant y User-Agent cuando aplique.
+4. Comprueba status, redirects, content type y estructura antes de editar.
+5. Contrasta el career site oficial: el slug o proveedor pueden haber cambiado.
+6. Ejecuta el fetcher manualmente sin persistir si necesitas validar mapping.
+7. Añade un test de regresión mockeado antes de corregir el código.
+8. Revisa si el último snapshot suprimió cierres y que no haya cierres masivos.
 
 Interpretación habitual:
 

@@ -3,12 +3,14 @@ import json
 import os
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from job_radar import matching, notifications
 from job_radar.connectors import ats, common, custom
 from job_radar.connectors import registry
 from job_radar.domain import Job
+from job_radar.observability import SourceHealth
 
 
 class JsonResponse:
@@ -198,6 +200,73 @@ class EmailNotificationTests(unittest.TestCase):
         self.assertNotIn("javascript:", html)
         self.assertNotIn("javascript:", text)
         self.assertIn("Enlace no disponible", html)
+
+    def test_email_alerts_only_for_required_unhealthy_sources(self):
+        failed_at = datetime(2026, 10, 8, tzinfo=timezone.utc)
+        required = SourceHealth(
+            company="Required & Co",
+            source="greenhouse",
+            required=True,
+            health_status="unhealthy",
+            recent_runs=10,
+            successful_runs=6,
+            success_rate=0.6,
+            consecutive_failures=2,
+            last_success_at=None,
+            last_failure_at=failed_at,
+            last_error_type="TimeoutError",
+            last_error_message="upstream <down>",
+        )
+        optional = SourceHealth(
+            company="Optional Co",
+            source="portal propio",
+            required=False,
+            health_status="unhealthy",
+            recent_runs=10,
+            successful_runs=0,
+            success_rate=0.0,
+            consecutive_failures=10,
+            last_success_at=None,
+            last_failure_at=failed_at,
+            last_error_type="ValueError",
+            last_error_message="broken",
+        )
+
+        _subject, html, text = notifications.build_match_email(
+            [self.make_match()],
+            source_health=(required, optional),
+        )
+
+        self.assertIn("Fuentes required unhealthy", html)
+        self.assertIn("Required &amp; Co", html)
+        self.assertIn("upstream &lt;down&gt;", html)
+        self.assertIn("Required & Co", text)
+        self.assertNotIn("Optional Co", html)
+        self.assertNotIn("Optional Co", text)
+
+    def test_email_without_required_unhealthy_source_is_unchanged(self):
+        optional = SourceHealth(
+            company="Optional Co",
+            source="portal propio",
+            required=False,
+            health_status="unhealthy",
+            recent_runs=2,
+            successful_runs=0,
+            success_rate=0.0,
+            consecutive_failures=2,
+            last_success_at=None,
+            last_failure_at=None,
+            last_error_type="ValueError",
+            last_error_message="broken",
+        )
+
+        _subject, html, text = notifications.build_match_email(
+            [self.make_match()],
+            source_health=(optional,),
+        )
+
+        self.assertNotIn("Fuentes required unhealthy", html)
+        self.assertNotIn("ALERTA DE SALUD", text)
 
     @patch("job_radar.notifications.email.get_active_matches")
     @patch("job_radar.notifications.email.urlopen")
