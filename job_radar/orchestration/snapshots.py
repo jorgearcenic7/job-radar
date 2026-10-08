@@ -99,16 +99,7 @@ def evaluate_snapshot(
         history
         and history[0].snapshot_status == "healthy"
         and _counts_are_similar(history[0].jobs_seen, jobs_seen)
-    ):
-        return SnapshotAssessment(
-            status="healthy",
-            closure_suppressed=False,
-            baseline_jobs=baseline_jobs,
-            current_ratio=current_ratio,
-            stabilized=True,
-        )
-
-    if _is_stable_reduced_snapshot(jobs_seen, history):
+    ) or _is_stable_reduced_snapshot(jobs_seen, history):
         return SnapshotAssessment(
             status="healthy",
             closure_suppressed=False,

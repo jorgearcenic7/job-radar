@@ -338,26 +338,7 @@ def baseline(
     confirmed: bool,
     migrations_directory: Path = DEFAULT_MIGRATIONS_DIRECTORY,
 ) -> tuple[Migration, ...]:
-    migrations = discover_migrations(migrations_directory)
-    target_migration = next(
-        (
-            migration
-            for migration in migrations
-            if migration.version_label == target
-        ),
-        None,
-    )
-
-    if target_migration is None:
-        raise MigrationDefinitionError(
-            f"el baseline {target!r} no corresponde a una migración local"
-        )
-
-    selected = tuple(
-        migration
-        for migration in migrations
-        if migration.version <= target_migration.version
-    )
+    selected = _baseline_plan(target, migrations_directory)
 
     if not confirmed:
         raise MigrationError(

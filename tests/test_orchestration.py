@@ -277,6 +277,29 @@ class OrchestrationTests(unittest.TestCase):
         send_match_notification.assert_not_called()
 
     @patch("job_radar.orchestration.runner.send_match_notification")
+    def test_interruption_finalizes_run_before_propagating(
+        self,
+        send_match_notification,
+    ):
+        for interruption in (KeyboardInterrupt(), SystemExit(3)):
+            with self.subTest(interruption=type(interruption).__name__):
+                repository = RecordingRunRepository()
+                connector = StubConnector(error=interruption)
+
+                with patch.object(runner, "CONNECTORS", (connector,)):
+                    with self.assertLogs(runner.LOGGER, level="INFO"):
+                        with self.assertRaises(type(interruption)):
+                            runner.run(repository)
+
+                self.assertEqual(
+                    repository.ingestion_finish["status"],
+                    "failed",
+                )
+                self.assertEqual(repository.source_finishes, [])
+
+        send_match_notification.assert_not_called()
+
+    @patch("job_radar.orchestration.runner.send_match_notification")
     @patch("job_radar.orchestration.runner.save_jobs", return_value=(1, 0))
     def test_suspicious_snapshot_updates_without_closing_missing_jobs(
         self,
