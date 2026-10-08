@@ -86,12 +86,15 @@ def save_jobs(
             selected,
             match_status,
             match_reason,
+            match_rules_version,
+            match_reason_codes,
             active,
             closed_at
         )
         VALUES (
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s, %s, %s,
+            %s, %s,
             TRUE, NULL
         )
         ON CONFLICT (source, source_job_id) DO UPDATE SET
@@ -106,6 +109,8 @@ def save_jobs(
             selected = EXCLUDED.selected,
             match_status = EXCLUDED.match_status,
             match_reason = EXCLUDED.match_reason,
+            match_rules_version = EXCLUDED.match_rules_version,
+            match_reason_codes = EXCLUDED.match_reason_codes,
             active = TRUE,
             closed_at = NULL,
             last_seen_at = CURRENT_TIMESTAMP
@@ -135,7 +140,6 @@ def save_jobs(
 
             for job in jobs:
                 result = classify(job)
-                status, level, reason = result or (None, None, None)
 
                 cursor.execute(
                     sql,
@@ -151,8 +155,18 @@ def save_jobs(
                         job.salary_text,
                         job.experience_text,
                         result is not None,
-                        status,
-                        f"{level}: {reason}" if result else None,
+                        result.status if result else None,
+                        (
+                            f"{result.level}: {result.reason}"
+                            if result
+                            else None
+                        ),
+                        result.rules_version if result else None,
+                        (
+                            [code.value for code in result.reason_codes]
+                            if result
+                            else None
+                        ),
                     ),
                 )
 

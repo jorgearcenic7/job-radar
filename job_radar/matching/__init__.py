@@ -1,4 +1,7 @@
 from .rules import (
+    MATCH_RULES_VERSION,
+    MatchReasonCode,
+    MatchResult,
     classify,
     extract_experience,
     extract_salary,
@@ -9,6 +12,9 @@ from .rules import (
 )
 
 __all__ = [
+    "MATCH_RULES_VERSION",
+    "MatchReasonCode",
+    "MatchResult",
     "classify",
     "extract_experience",
     "extract_salary",
@@ -17,4 +23,3 @@ __all__ = [
     "normalize",
     "required_experience_years",
 ]
-

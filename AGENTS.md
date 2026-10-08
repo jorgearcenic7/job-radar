@@ -44,6 +44,10 @@ Next.js son específicas y no se duplican aquí.
   seguir usando variables server-side sin prefijo `NEXT_PUBLIC_`.
 - Conserva la semántica de fuentes `required`, opcionales y `catch_all`; revisa
   `job_radar/orchestration/runner.py` y sus tests antes de alterarla.
+- `MATCH_RULES_VERSION` vive únicamente en `job_radar/matching/rules.py`; todo
+  cambio que altere decisiones de matching debe incrementarla. Los reason
+  codes son un contrato machine-readable estable: no los reutilices con otro
+  significado. `match_reason` es texto humano y puede evolucionar.
 - Evita dependencias nuevas si la biblioteca estándar o una dependencia actual
   resuelve el problema. Actualiza manifests y lockfiles juntos cuando aplique.
 - Trabaja en una rama y mediante PR. No hagas push directo a `main`.

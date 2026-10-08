@@ -76,7 +76,7 @@ class MatchingTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result[0], "Buena coincidencia")
+        self.assertEqual(result.status, "Buena coincidencia")
         infer_countries.assert_called_once_with("Barcelona")
 
     def test_remote_europe_location_is_accepted(self):
@@ -87,7 +87,7 @@ class MatchingTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result[0], "Buena coincidencia")
+        self.assertEqual(result.status, "Buena coincidencia")
 
     def test_spanish_remote_word_is_accepted(self):
         result = matching.classify(
@@ -97,7 +97,7 @@ class MatchingTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result[0], "Buena coincidencia")
+        self.assertEqual(result.status, "Buena coincidencia")
 
     @patch("job_radar.matching.rules.infer_countries", return_value=["United Kingdom"])
     def test_foreign_non_remote_location_is_rejected(
@@ -134,13 +134,13 @@ class MatchingTests(unittest.TestCase):
                 "2 years of experience",
             )
         )
-        self.assertEqual(result[0], "Buena coincidencia")
+        self.assertEqual(result.status, "Buena coincidencia")
 
     def test_unspecified_data_engineer_is_stretch(self):
         result = matching.classify(
             self.make_job("Data Engineer")
         )
-        self.assertEqual(result[0], "Stretch")
+        self.assertEqual(result.status, "Stretch")
 
     def test_data_focused_software_engineer_is_stretch(self):
         result = matching.classify(
@@ -149,7 +149,7 @@ class MatchingTests(unittest.TestCase):
                 "Build data pipelines, ETL systems and a data warehouse",
             )
         )
-        self.assertEqual(result[0], "Stretch")
+        self.assertEqual(result.status, "Stretch")
 
     def test_senior_role_is_rejected(self):
         result = matching.classify(
