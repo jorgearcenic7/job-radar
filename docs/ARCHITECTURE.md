@@ -3,7 +3,8 @@
 Este documento describe el comportamiento implementado en el repositorio. La
 configuración de servicios externos —PostgreSQL gestionado, Neon, Vercel,
 Resend o controles de cuenta de GitHub— queda fuera del código y se trata como
-responsabilidad operativa.
+responsabilidad operativa. Las decisiones arquitectónicas y sus motivos se
+registran en los [ADRs](adr/README.md).
 
 ## Componentes
 
