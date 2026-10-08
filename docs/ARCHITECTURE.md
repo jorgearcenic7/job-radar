@@ -102,7 +102,7 @@ aportar un campo publicado por el ATS y usar los extractores como fallback.
   además de la protección del orquestador.
 
 Cada fuente se guarda en su propia conexión/transacción. No existe una
-transacción única para las 70 fuentes.
+transacción única para todas las fuentes.
 
 ### Snapshot protection
 
