@@ -1,11 +1,13 @@
 import json
 import logging
 import os
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from html import escape
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from job_radar.observability import SourceHealth
 from job_radar.storage import get_active_matches
 
 
@@ -26,7 +28,60 @@ def safe_https_url(value):
     return value
 
 
-def build_match_email(matches, partial=False):
+def _build_health_alert(
+    source_health: Iterable[SourceHealth],
+) -> tuple[str, list[str]]:
+    unhealthy = tuple(
+        source
+        for source in source_health
+        if source.required and source.health_status == "unhealthy"
+    )
+    if not unhealthy:
+        return "", []
+
+    html_items = []
+    text_items = ["ALERTA DE SALUD DE FUENTES REQUIRED"]
+    for source in unhealthy:
+        success_rate = (
+            f"{source.success_rate:.0%}"
+            if source.success_rate is not None
+            else "sin datos"
+        )
+        error = source.last_error_type or "sin error registrado"
+        if source.last_error_message:
+            message = " ".join(source.last_error_message.split())[:160]
+            error = f"{error}: {message}"
+
+        html_items.append(
+            "<li><strong>{company}</strong> ({source}): {rate}, "
+            "{failures} fallos consecutivos. Último error: {error}</li>".format(
+                company=escape(source.company),
+                source=escape(source.source),
+                rate=escape(success_rate),
+                failures=source.consecutive_failures,
+                error=escape(error),
+            )
+        )
+        text_items.append(
+            f"- {source.company} ({source.source}): {success_rate}, "
+            f"{source.consecutive_failures} fallos consecutivos. "
+            f"Último error: {error}"
+        )
+
+    html = (
+        '<div style="background:#fef2f2;border:1px solid #fecaca;'
+        'border-radius:12px;color:#991b1b;margin:0 0 22px;padding:16px;">'
+        '<strong>Fuentes required unhealthy</strong><ul style="margin:8px 0 0;'
+        f'padding-left:20px;">{"".join(html_items)}</ul></div>'
+    )
+    return html, [*text_items, ""]
+
+
+def build_match_email(
+    matches,
+    partial=False,
+    source_health: Iterable[SourceHealth] = (),
+):
     count = len(matches)
     match_label = "coincidencia" if count == 1 else "coincidencias"
     active_label = "activa" if count == 1 else "activas"
@@ -40,6 +95,7 @@ def build_match_email(matches, partial=False):
         if partial
         else "La ingesta diaria ha terminado correctamente."
     )
+    health_alert_html, health_alert_text = _build_health_alert(source_health)
 
     cards = []
     text_items = []
@@ -122,6 +178,7 @@ def build_match_email(matches, partial=False):
           </h1>
           <p style="color:#475569;font-size:14px;line-height:1.6;
                     margin:0 0 22px;">{summary}</p>
+          {health_alert}
           {cards}
           <p style="color:#94a3b8;font-size:12px;margin:24px 0 0;">
             Generado automáticamente por Job Radar.
@@ -134,6 +191,7 @@ def build_match_email(matches, partial=False):
         match_label=match_label,
         active_label=active_label,
         summary=escape(summary),
+        health_alert=health_alert_html,
         cards="".join(cards),
     )
 
@@ -142,6 +200,7 @@ def build_match_email(matches, partial=False):
         f"{count} {match_label} {active_label}",
         summary,
         "",
+        *health_alert_text,
         *text_items,
         "Generado automáticamente por Job Radar.",
     ])
@@ -149,7 +208,10 @@ def build_match_email(matches, partial=False):
     return subject, html, text
 
 
-def send_match_notification(partial=False):
+def send_match_notification(
+    partial=False,
+    source_health: Iterable[SourceHealth] = (),
+):
     api_key = os.getenv("RESEND_API_KEY", "").strip()
 
     if not api_key:
@@ -162,7 +224,11 @@ def send_match_notification(partial=False):
         raise ValueError("Falta NOTIFICATION_EMAIL")
 
     matches = get_active_matches()
-    subject, html, text = build_match_email(matches, partial=partial)
+    subject, html, text = build_match_email(
+        matches,
+        partial=partial,
+        source_health=source_health,
+    )
 
     payload = json.dumps({
         "from": (

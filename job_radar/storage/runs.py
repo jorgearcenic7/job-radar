@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -7,6 +8,16 @@ class SourceSnapshot:
     jobs_seen: int
     snapshot_status: str
     closure_suppressed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRunRecord:
+    company: str
+    source: str
+    status: str
+    finished_at: datetime
+    error_type: str | None
+    error_message: str | None
 
 
 class RunRepository:
@@ -191,3 +202,67 @@ class RunRepository:
                     )
                     for row in cursor.fetchall()
                 ]
+
+    def get_recent_source_runs(
+        self,
+        *,
+        limit: int = 10,
+    ) -> dict[tuple[str, str], tuple[SourceRunRecord, ...]]:
+        """Return recent runs plus the latest success/failure, newest first."""
+        if limit <= 0:
+            return {}
+
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        company,
+                        source,
+                        status,
+                        finished_at,
+                        error_type,
+                        error_message
+                    FROM (
+                        SELECT
+                            company,
+                            source,
+                            status,
+                            finished_at,
+                            error_type,
+                            error_message,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY company, source
+                                ORDER BY started_at DESC, id DESC
+                            ) AS position,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY company, source, status
+                                ORDER BY started_at DESC, id DESC
+                            ) AS status_position
+                        FROM source_runs
+                        WHERE
+                            finished_at IS NOT NULL
+                            AND status IN ('success', 'failed')
+                    ) AS recent
+                    WHERE position <= %s OR status_position = 1
+                    ORDER BY company, source, position
+                    """,
+                    (limit,),
+                )
+                rows = cursor.fetchall()
+
+        histories: dict[tuple[str, str], list[SourceRunRecord]] = {}
+        for row in rows:
+            record = SourceRunRecord(
+                company=row[0],
+                source=row[1],
+                status=row[2],
+                finished_at=row[3],
+                error_type=row[4],
+                error_message=row[5],
+            )
+            histories.setdefault(
+                (record.company, record.source), []
+            ).append(record)
+
+        return {key: tuple(records) for key, records in histories.items()}

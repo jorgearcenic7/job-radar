@@ -19,6 +19,7 @@ enviar coincidencias por Resend.
 | Persistencia y lifecycle | `job_radar/storage/` |
 | Snapshot protection | `job_radar/orchestration/snapshots.py` |
 | Ejecución, errores y estados | `job_radar/orchestration/runner.py` |
+| Salud operativa de fuentes | `job_radar/observability/health.py` |
 | Correo | `job_radar/notifications/` |
 | Schema y migraciones | `sql/` |
 | Aplicación web | `web/` |
@@ -44,6 +45,10 @@ Next.js son específicas y no se duplican aquí.
   seguir usando variables server-side sin prefijo `NEXT_PUBLIC_`.
 - Conserva la semántica de fuentes `required`, opcionales y `catch_all`; revisa
   `job_radar/orchestration/runner.py` y sus tests antes de alterarla.
+- La salud histórica se deriva de `source_runs` en
+  `job_radar/observability/health.py`. No confundas un fallo de ejecución con
+  `snapshot_status`: son señales distintas. Mantén explícitos y cubiertos por
+  tests los umbrales y el SLO de fuentes `required`.
 - `MATCH_RULES_VERSION` vive únicamente en `job_radar/matching/rules.py`; todo
   cambio que altere decisiones de matching debe incrementarla. Los reason
   codes son un contrato machine-readable estable: no los reutilices con otro

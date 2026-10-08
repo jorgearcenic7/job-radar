@@ -13,6 +13,7 @@ main.py
     ├── job_radar.connectors        obtiene y normaliza snapshots
     ├── job_radar.matching          prepara, clasifica y deriva campos
     ├── job_radar.storage           persiste datos ya preparados y ejecuciones
+    ├── job_radar.observability     deriva salud histórica y SLO de fuentes
     ├── orchestration.snapshots     decide si se pueden cerrar ausentes
     └── job_radar.notifications     envía coincidencias activas
 
@@ -32,6 +33,7 @@ web/
 | `matching/preparation.py` | Convierte un `Job` en `PreparedJob`. |
 | `storage/postgres.py` | Upsert, cierres, reactivación y consulta para email. |
 | `storage/runs.py` | Persistencia de métricas por pipeline y fuente. |
+| `observability/health.py` | Health histórico y SLO de los conectores. |
 | `job_radar/orchestration/snapshots.py` | Evaluación de snapshots vacíos o anómalos. |
 | `job_radar/orchestration/runner.py` | Coordinación secuencial, estados, logs y notificación. |
 | `notifications/email.py` | Render HTML/texto y llamada a Resend. |
@@ -72,8 +74,10 @@ selección, versión, reason codes y motivo humano ya derivados.
    cierres están permitidos, desactiva las identidades que faltan. Storage no
    importa ni ejecuta reglas de matching.
 7. Se finaliza `source_run` con métricas o información del error.
-8. Tras procesar fuentes recuperables, se intenta notificar las coincidencias
-   activas por correo.
+8. Tras procesar fuentes recuperables, se calcula la salud desde los últimos
+   `source_runs` y se intenta notificar las coincidencias activas por correo.
+   El mismo correo añade una alerta breve si hay fuentes requeridas
+   `unhealthy`.
 9. El run se finaliza como `success`, `partial` o `failed`, incluso ante una
    excepción fatal.
 
@@ -147,6 +151,27 @@ debe sustituir su lectura antes de cambiarlos.
 `ingestion_runs` resume toda la ejecución. `source_runs` conserva empresa,
 fuente, duración, recuentos, estado del snapshot, supresión de cierres y
 detalles del error. El runner emite logs estructurados con los mismos datos.
+
+`job_radar.observability.health` deriva, sin tablas adicionales, la salud de
+cada fuente configurada a partir de una ventana de hasta diez `source_runs`
+completados; la consulta conserva además el último éxito y fallo aunque queden
+fuera de esa ventana. Un run individual (`success` o `failed`), la calidad de
+su snapshot (`healthy`, `suspicious` o `empty`) y el health histórico del
+conector son conceptos independientes. En particular, un snapshot vacío o
+sospechoso no se convierte automáticamente en un fallo del conector.
+
+El health es `unknown` sin historial completado; `healthy` si la ejecución más
+reciente funciona y el éxito es al menos 90 %; `degraded` ante un fallo reciente
+aislado o una tasa entre 70 % y menos de 90 %; y `unhealthy` ante dos fallos
+consecutivos o una tasa inferior al 70 % con la ventana completa. Antes de
+reunir diez muestras, la tasa por sí sola no marca `unhealthy`, aunque dos
+fallos consecutivos sí lo hacen.
+
+El SLO operativo interno exige que cada fuente `required` alcance al menos un
+90 % de éxito en sus últimas diez ejecuciones. Solo se evalúa la tasa al
+completar esa ventana, pero dos fallos consecutivos producen un incumplimiento
+anticipado. Las fuentes opcionales exponen health para diagnóstico y nunca
+incumplen el SLO global.
 
 Los conectores configurados por ATS son `required=True` y `catch_all=False`.
 Los conectores personalizados son `catch_all=True`; Revolut es además la única
