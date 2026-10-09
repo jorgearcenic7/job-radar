@@ -77,6 +77,7 @@ export default async function Home({
   const country = boundedParam(params.country, "Spain");
 
   const selected = params.selected === "1";
+  const filterFormKey = JSON.stringify({ q, company, country, selected });
 
   const requestedPage =
     typeof params.page === "string"
@@ -281,7 +282,7 @@ export default async function Home({
             </p>
           </div>
 
-          <form className="filter-panel">
+          <form key={filterFormKey} className="filter-panel">
             <div className="search-field">
               <svg
                 aria-hidden="true"
