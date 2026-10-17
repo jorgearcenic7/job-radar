@@ -64,6 +64,11 @@ GREENHOUSE_COMPANIES = {
     "Fivetran": "fivetran",
     "SumUp": "sumup",
     "Bitpanda": "bitpanda",
+    "Elastic": "elastic",
+    "GitLab": "gitlab",
+    "Grafana Labs": "grafanalabs",
+    "TheFork": "thefork",
+    "Payhawk": "payhawkio",
 }
 
 ASHBY_COMPANIES = {
@@ -90,6 +95,14 @@ ASHBY_COMPANIES = {
     "Kraken": "kraken.com",
     "Alan": "alan",
     "Satispay": "satispay",
+    "ElevenLabs": "elevenlabs",
+    "Oyster HR": "oyster",
+    "Amenitiz": "amenitiz",
+    "Pliant": "pliant",
+    "Mistral AI": "mistral.ai",
+    "Prefect": "prefect",
+    "PostHog": "posthog",
+    "Primer": "primer",
 }
 
 WORKDAY_COMPANIES = {
@@ -114,7 +127,12 @@ SMARTRECRUITERS_COMPANIES = {
     "Grab / Grab Financial Group": "Grab",
 }
 
-LEVER_COMPANIES = {"Paytm": "paytm", "Jobandtalent": "jobandtalent"}
+LEVER_COMPANIES = {
+    "Paytm": "paytm",
+    "Jobandtalent": "jobandtalent",
+    "Metabase": "metabase",
+    "Tinybird": "tinybird",
+}
 DEEL_COMPANIES = {"Klarna": "klarna"}
 BAMBOOHR_COMPANIES = {"Flutterwave": "flutterwavego"}
 EIGHTFOLD_COMPANIES = {"PayPal": ("paypal.eightfold.ai", "paypal.com")}

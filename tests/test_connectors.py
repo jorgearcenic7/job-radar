@@ -841,7 +841,7 @@ class NewCompanyConfigurationTests(unittest.TestCase):
 
         self.assertEqual(
             len(registry.CONNECTORS),
-            69 + len(greenhouse_companies) + len(ashby_companies),
+            84 + len(greenhouse_companies) + len(ashby_companies),
         )
 
     def test_spain_product_and_fintech_sources_are_configured(self):
@@ -852,6 +852,11 @@ class NewCompanyConfigurationTests(unittest.TestCase):
                 "Fivetran": "fivetran",
                 "SumUp": "sumup",
                 "Bitpanda": "bitpanda",
+                "Elastic": "elastic",
+                "GitLab": "gitlab",
+                "Grafana Labs": "grafanalabs",
+                "TheFork": "thefork",
+                "Payhawk": "payhawkio",
             }),
             (registry.ASHBY_COMPANIES, {
                 "Preply": "preply",
@@ -861,8 +866,20 @@ class NewCompanyConfigurationTests(unittest.TestCase):
                 "Kraken": "kraken.com",
                 "Alan": "alan",
                 "Satispay": "satispay",
+                "ElevenLabs": "elevenlabs",
+                "Oyster HR": "oyster",
+                "Amenitiz": "amenitiz",
+                "Pliant": "pliant",
+                "Mistral AI": "mistral.ai",
+                "Prefect": "prefect",
+                "PostHog": "posthog",
+                "Primer": "primer",
             }),
-            (registry.LEVER_COMPANIES, {"Jobandtalent": "jobandtalent"}),
+            (registry.LEVER_COMPANIES, {
+                "Jobandtalent": "jobandtalent",
+                "Metabase": "metabase",
+                "Tinybird": "tinybird",
+            }),
         ]
 
         for companies, slugs in expected:
