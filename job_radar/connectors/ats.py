@@ -14,8 +14,8 @@ from .common import (
     DEFAULT_HTTP_TIMEOUT_SECONDS,
     fetch_json,
     fetch_text,
-    read_url,
     plain_text,
+    read_json,
     workday_relevant_title,
 )
 
@@ -420,12 +420,11 @@ def fetch_workday(company, host, tenant, site):
             },
         )
 
-        body = read_url(
+        data = read_json(
             request,
             timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
             context=f"company={company!r} source=workday",
         )
-        data = json.loads(body)
 
         page = data.get("jobPostings") or []
 
@@ -493,12 +492,11 @@ def fetch_workday(company, host, tenant, site):
             },
         )
 
-        body = read_url(
+        detail = read_json(
             request,
             timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
             context=f"company={company!r} source=workday",
         )
-        detail = json.loads(body)
 
         info = detail.get("jobPostingInfo") or {}
         description = plain_text(

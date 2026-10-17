@@ -148,6 +148,11 @@ ofertas.
   ausentes.
 - El nivel reducido puede estabilizarse después de tres snapshots similares;
   la tolerancia es el mayor valor entre dos ofertas y el 10 % del recuento.
+- Un conector que leyó el listado completo pero no pudo descargar el detalle
+  de algunos IDs devuelve `IncompleteSnapshot` con esos `failed_ids`. Cuentan
+  como vistos para la evaluación del snapshot y `save_jobs(keep_ids=...)` los
+  excluye del cierre; el resto de la fuente se cierra con normalidad. El
+  runner deja log `snapshot_incomplete`.
 
 Los umbrales pertenecen a `job_radar/orchestration/snapshots.py`; esta documentación no
 debe sustituir su lectura antes de cambiarlos.
@@ -227,9 +232,13 @@ Un run puede ser `partial` aunque la fuente fallida sea opcional. El flag
 ## Aplicación web
 
 `web/src/app/page.tsx` fuerza render dinámico y ejecuta consultas parametrizadas
-mediante el pool de `web/src/lib/db.ts`. Solo lee `jobs.active = TRUE`, limita
-la página a 20 filas, acota filtros a 120 caracteres y la página solicitada a
-500. No existe una API intermedia en el repo. La web no lee ni escribe
+mediante el pool de `web/src/lib/db.ts`. Solo lee `jobs.active = TRUE` y
+oculta las ofertas que llevan más de 7 días sin verse respecto a la última
+ingesta, igual que el correo; medirlo contra la última ingesta evita vaciar la
+web si se detiene todo el pipeline. Muestra cuándo se actualizó por última vez
+y lo marca en ámbar si pasan más de 72 horas. Limita la página a 20 filas,
+acota filtros a 120 caracteres y la página solicitada a 500; una página fuera
+de rango redirige a la última. No existe una API intermedia en el repo. La web no lee ni escribe
 `job_feedback`; el feedback se gestiona con tooling operativo.
 
 En Vercel, `WEB_DATABASE_URL` es obligatoria. El código no emite escrituras,

@@ -18,6 +18,15 @@ El workflow construye el `Dockerfile`, exige `DATABASE_URL`,
 `NOTIFICATION_FROM`. `NOTIFICATION_RUN_ID` combina run y reintento de GitHub
 para la idempotencia de Resend.
 
+### Keepalive de workflows programados
+
+GitHub desactiva los cron de un repositorio público tras 60 días sin
+actividad. `.github/workflows/keepalive.yml` se ejecuta los días 1 y 15 y
+reactiva por API `job-radar.yml` y a sí mismo, lo que reinicia ese contador
+sin commits artificiales. Solo necesita `permissions: actions: write` sobre el
+token del propio workflow. Si alguna vez aparece desactivado, reactívalo desde
+**Actions** o lanza **Workflow keepalive** manualmente.
+
 ## Variables
 
 | Variable | Consumidor | Comportamiento comprobable |
@@ -267,6 +276,15 @@ se pueden confirmar desde este código.
 ## Resend
 
 El correo se construye escapando campos externos y solo enlaza URLs HTTPS.
+Las coincidencias vistas por primera vez en la ejecución actual aparecen en
+una sección «Nuevas en esta ejecución» y su número se añade al asunto. No se
+incluyen ofertas activas que lleven más de 7 días (`STALE_AFTER_DAYS`) sin
+verse respecto a la última ingesta: su fuente lleva varias ejecuciones
+fallando y su enlace ya no está verificado; cuántas se ocultan queda en el
+log `stale_matches_hidden`. El envío reintenta errores
+transitorios con la política HTTP común; siempre lleva `Idempotency-Key`
+(`NOTIFICATION_RUN_ID` o un UUID por envío), así que un reintento no duplica
+el correo.
 Una ausencia de `RESEND_API_KEY` omite el envío; una API key sin destinatario es
 error. El workflow programado exige ambas variables, por lo que no ejecuta una
 ingesta de producción silenciosamente sin notificación.

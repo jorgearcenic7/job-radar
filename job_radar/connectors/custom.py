@@ -5,6 +5,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import unescape
 from html.parser import HTMLParser
+from http.client import HTTPException
 from http.cookiejar import CookieJar
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
@@ -15,10 +16,12 @@ from job_radar.matching import extract_experience, extract_salary
 from .common import as_jobs as _as_jobs
 from .common import (
     DEFAULT_HTTP_TIMEOUT_SECONDS,
+    IncompleteSnapshot,
     JSON_TIMEOUT_SECONDS,
     fetch_json,
     fetch_text,
     plain_text,
+    read_json,
     read_url,
     request_with_retry,
     workday_relevant_title,
@@ -646,58 +649,70 @@ def fetch_deel_job(job_id, company="Deel", board="deel"):
     })
 
 
-def fetch_deel_company(company, board):
-    page = fetch_text(
-        f"https://jobs.deel.com/{board}",
-        context=f"company={company!r} source=deel",
-    )
-    ids = sorted(set(
-        re.findall(
-            rf"/{re.escape(board)}/job-details/"
-            r"([0-9a-fA-F-]{36})",
-            page,
-        )
-    ))
-
+def _fetch_deel_jobs(company, board, ids):
     if not ids:
         raise ValueError(f"{company}: no job IDs found")
 
     result = []
-    failures = 0
+    failed_ids = []
+    error_types = set()
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {
-            executor.submit(
-                fetch_deel_job,
-                job_id,
-                company,
-                board,
-            ): job_id
+            executor.submit(fetch_deel_job, job_id, company, board): job_id
             for job_id in ids
         }
 
         for future in as_completed(futures):
             try:
                 job = future.result()
+            except (OSError, HTTPException, ValueError) as error:
+                failed_ids.append(futures[future])
+                error_types.add(type(error).__name__)
+                continue
 
-                if job:
-                    result.append(job)
-            except Exception:
-                failures += 1
+            if job is None:
+                # Página sin JSON-LD (p. ej. un challenge con 200): el ID
+                # sigue listado, así que tampoco es una oferta cerrada.
+                failed_ids.append(futures[future])
+                error_types.add("missing_jsonld")
+            else:
+                result.append(job)
 
     if not result:
         raise ValueError(
-            f"{company}: no jobs parsed ({failures} failures)"
+            f"{company}: no jobs parsed ({len(failed_ids)} failures)"
         )
 
-    if failures:
-        LOGGER.warning(
-            "job_pages_failed company=%r source=deel failures=%s",
-            company,
-            failures,
-        )
+    if not failed_ids:
+        return _as_jobs(result)
 
-    return _as_jobs(result)
+    LOGGER.warning(
+        "job_pages_failed company=%r source=deel failures=%s "
+        "ids_total=%s error_types=%s failed_ids=%s",
+        company,
+        len(failed_ids),
+        len(ids),
+        ",".join(sorted(error_types)),
+        ",".join(sorted(failed_ids)[:10]),
+    )
+    return IncompleteSnapshot(_as_jobs(result), failed_ids=failed_ids)
+
+
+def _deel_job_ids(page, pattern):
+    return sorted(set(re.findall(pattern, page)))
+
+
+def fetch_deel_company(company, board):
+    page = fetch_text(
+        f"https://jobs.deel.com/{board}",
+        context=f"company={company!r} source=deel",
+    )
+    ids = _deel_job_ids(
+        page,
+        rf"/{re.escape(board)}/job-details/([0-9a-fA-F-]{{36}})",
+    )
+    return _fetch_deel_jobs(company, board, ids)
 
 
 def fetch_deel():
@@ -705,48 +720,8 @@ def fetch_deel():
         "https://www.deel.com/careers/",
         context="company='Deel' source=deel",
     )
-
-    ids = sorted(set(
-        re.findall(
-            r"job-details/([0-9a-fA-F-]{36})",
-            page,
-        )
-    ))
-
-    if not ids:
-        raise ValueError("Deel: no job IDs found")
-
-    result = []
-    failures = 0
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {
-            executor.submit(fetch_deel_job, job_id): job_id
-            for job_id in ids
-        }
-
-        for future in as_completed(futures):
-            try:
-                job = future.result()
-
-                if job:
-                    result.append(job)
-
-            except Exception:
-                failures += 1
-
-    if not result:
-        raise ValueError(
-            f"Deel: no jobs parsed ({failures} failures)"
-        )
-
-    if failures:
-        LOGGER.warning(
-            "job_pages_failed company='Deel' source=deel failures=%s",
-            failures,
-        )
-
-    return _as_jobs(result)
+    ids = _deel_job_ids(page, r"job-details/([0-9a-fA-F-]{36})")
+    return _fetch_deel_jobs("Deel", "deel", ids)
 
 
 def ant_experience(posting, description):
@@ -806,12 +781,11 @@ def fetch_ant_group():
             method="POST",
         )
 
-        body = read_url(
+        data = read_json(
             request,
             timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
             context="company='Ant Group / Ant International' source=ant",
         )
-        data = json.loads(body)
 
         if not data.get("success"):
             raise ValueError(

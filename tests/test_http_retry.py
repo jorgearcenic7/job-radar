@@ -10,7 +10,7 @@ class ByteResponse:
     def __init__(self, body):
         self.body = body
 
-    def read(self):
+    def read(self, _size=-1):
         return self.body
 
     def __enter__(self):
@@ -21,7 +21,7 @@ class ByteResponse:
 
 
 class ReadTimeoutResponse(ByteResponse):
-    def read(self):
+    def read(self, _size=-1):
         raise TimeoutError("body read timed out")
 
 
@@ -146,6 +146,30 @@ class HttpRetryTests(unittest.TestCase):
 
         urlopen.assert_called_once()
         self.sleep.assert_not_called()
+
+    @patch("job_radar.connectors.common.urlopen")
+    def test_empty_json_body_is_retried(self, urlopen):
+        urlopen.side_effect = [
+            ByteResponse(b""),
+            ByteResponse(b'{"jobs": []}'),
+        ]
+
+        self.assertEqual(
+            common.fetch_json("https://example.invalid/jobs"),
+            {"jobs": []},
+        )
+        self.assertEqual(urlopen.call_count, 2)
+        self.sleep.assert_called_once()
+
+    @patch("job_radar.connectors.common.urlopen")
+    def test_oversized_response_is_rejected(self, urlopen):
+        urlopen.return_value = ByteResponse(b"x" * 11)
+
+        with patch.object(common, "MAX_RESPONSE_BYTES", 10):
+            with self.assertRaises(common.ResponseTooLargeError):
+                common.fetch_text("https://example.invalid/jobs")
+
+        urlopen.assert_called_once()
 
 
 if __name__ == "__main__":

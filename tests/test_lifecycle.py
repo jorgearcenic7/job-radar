@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 
 try:
     import psycopg
@@ -12,7 +13,9 @@ from job_radar.matching import (
     MatchReasonCode,
     prepare_job,
 )
-from job_radar.storage import save_jobs
+from job_radar.notifications import build_match_email
+from job_radar.storage import get_active_matches, save_jobs
+from job_radar.storage.postgres import STALE_AFTER_DAYS
 from job_radar.storage.migrations import apply_pending
 
 
@@ -151,6 +154,78 @@ class LifecycleTests(unittest.TestCase):
         active, closed_at = self.job_state("job-1")
         self.assertTrue(active)
         self.assertIsNone(closed_at)
+
+    def shift_last_seen(self, job_id, days):
+        with psycopg.connect(TEST_DATABASE_URL) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE jobs
+                    SET last_seen_at = CURRENT_TIMESTAMP
+                        - make_interval(days => %s)
+                    WHERE source = %s
+                      AND source_job_id = %s
+                    """,
+                    (days, SOURCE, job_id),
+                )
+
+    def test_active_matches_hide_jobs_stale_relative_to_last_ingestion(
+        self,
+    ):
+        fresh, stale = (
+            self.make_job(job_id, "Junior Data Engineer", "Madrid, Spain")
+            for job_id in ("job-fresh", "job-stale")
+        )
+        save_jobs(prepare_jobs(fresh, stale), COMPANY)
+        # Pipeline detenido 30 días: lo último ingerido sigue visible y solo
+        # se oculta lo que ya estaba atrasado respecto a esa ingesta.
+        self.shift_last_seen("job-fresh", 30)
+        self.shift_last_seen("job-stale", 30 + STALE_AFTER_DAYS + 1)
+
+        with self.assertLogs("job_radar.storage.postgres", "WARNING") as logs:
+            urls = {
+                match["url"]
+                for match in get_active_matches()
+                if match["company"] == COMPANY
+            }
+
+        self.assertIn("stale_matches_hidden count=1", logs.output[0])
+        self.assertIn(fresh.url, urls)
+        self.assertNotIn(stale.url, urls)
+        self.assertTrue(self.job_state("job-stale")[0])
+
+    def test_new_matches_reach_email_with_aware_first_seen(self):
+        run_started_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        job = self.make_job("job-new", "Junior Data Engineer", "Madrid, Spain")
+        save_jobs(prepare_jobs(job), COMPANY)
+
+        matches = [
+            match for match in get_active_matches()
+            if match["company"] == COMPANY
+        ]
+        subject, _html, _text = build_match_email(
+            matches,
+            new_since=run_started_at,
+        )
+
+        self.assertIsNotNone(matches[0]["first_seen_at"].tzinfo)
+        self.assertIn("1 nueva", subject)
+
+    def test_listed_ids_without_detail_are_not_closed(self):
+        listed = self.make_job("job-listed", "Data Engineer I")
+        failed = self.make_job("job-detail-failed", "Data Engineer II")
+        gone = self.make_job("job-gone", "Data Engineer III")
+        save_jobs(prepare_jobs(listed, failed, gone), COMPANY)
+
+        _new, closed = save_jobs(
+            prepare_jobs(listed),
+            COMPANY,
+            keep_ids={"job-detail-failed"},
+        )
+
+        self.assertEqual(closed, 1)
+        self.assertTrue(self.job_state("job-detail-failed")[0])
+        self.assertFalse(self.job_state("job-gone")[0])
 
     def test_empty_snapshot_does_not_close_jobs(self):
         job = self.make_job("job-safe", "Junior Data Engineer")
