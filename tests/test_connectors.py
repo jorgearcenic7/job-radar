@@ -841,7 +841,7 @@ class NewCompanyConfigurationTests(unittest.TestCase):
 
         self.assertEqual(
             len(registry.CONNECTORS),
-            84 + len(greenhouse_companies) + len(ashby_companies),
+            93 + len(greenhouse_companies) + len(ashby_companies),
         )
 
     def test_spain_product_and_fintech_sources_are_configured(self):
@@ -879,6 +879,28 @@ class NewCompanyConfigurationTests(unittest.TestCase):
                 "Jobandtalent": "jobandtalent",
                 "Metabase": "metabase",
                 "Tinybird": "tinybird",
+            }),
+            (registry.RECRUITEE_COMPANIES, {
+                "SeQura": "sequra",
+                "Holded": "holded",
+            }),
+            (registry.PERSONIO_COMPANIES, {
+                "Indexa Capital": "talento-indexa-capital.jobs.personio.com",
+            }),
+            (registry.PINPOINT_COMPANIES, {"CARTO": "carto"}),
+            (registry.WORKABLE_COMPANIES, {
+                "Kantox": "kantox",
+                "Yapily": "yapily",
+            }),
+            (registry.TEAMTAILOR_COMPANIES, {
+                "Freepik": (
+                    "https://careers.freepik.com",
+                    "teamtailor:freepik",
+                ),
+                "PayFit": (
+                    "https://careers.payfit.com",
+                    "teamtailor:payfit",
+                ),
             }),
         ]
 
@@ -918,6 +940,192 @@ class NewCompanyConfigurationTests(unittest.TestCase):
         self.assertIn("Klarna", registry.DEEL_COMPANIES)
         self.assertIn("Flutterwave", registry.BAMBOOHR_COMPANIES)
         self.assertIn("PayPal", registry.EIGHTFOLD_COMPANIES)
+
+
+class RecruiteeTests(unittest.TestCase):
+    @patch("job_radar.connectors.ats.fetch_json")
+    def test_published_offers_mapping(self, fetch_json):
+        fetch_json.return_value = {
+            "offers": [
+                {
+                    "id": 101,
+                    "status": "published",
+                    "title": "Data Engineer",
+                    "location": "Barcelona, Spain",
+                    "locations": [{"city": "Madrid", "country": "Spain"}],
+                    "remote": True,
+                    "careers_url": "https://example.recruitee.com/o/data",
+                    "description": "<p>Python and SQL.</p>",
+                    "requirements": "<p>2 years of experience.</p>",
+                    "salary": {
+                        "min": 40000,
+                        "max": 50000,
+                        "currency": "EUR",
+                        "period": "year",
+                    },
+                },
+                {"id": 102, "status": "draft", "title": "Hidden"},
+            ]
+        }
+
+        jobs = ats.fetch_recruitee("Example", "example")
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].source, "recruitee:example")
+        self.assertEqual(jobs[0].source_job_id, "101")
+        self.assertEqual(
+            jobs[0].location,
+            "Barcelona, Spain; Madrid, Spain; Remote",
+        )
+        self.assertEqual(jobs[0].salary_text, "40000 – 50000 EUR / year")
+        self.assertEqual(jobs[0].experience_text, "2 years of experience")
+
+
+class PersonioTests(unittest.TestCase):
+    @patch("job_radar.connectors.ats.fetch_text")
+    def test_xml_mapping(self, fetch_text):
+        fetch_text.return_value = """<?xml version="1.0" encoding="UTF-8"?>
+            <workzag-jobs><position>
+              <id>2707763</id>
+              <office>Madrid</office>
+              <additionalOffices><office>Remoto</office></additionalOffices>
+              <name>Data Analyst</name>
+              <jobDescriptions><jobDescription>
+                <name>Tareas</name><value><![CDATA[<p>SQL</p>]]></value>
+              </jobDescription></jobDescriptions>
+              <yearsOfExperience>1-2</yearsOfExperience>
+              <salaryInformation>
+                <min>24000.00</min><max>30000.00</max>
+                <currencyCode>EUR</currencyCode><type>yearly</type>
+              </salaryInformation>
+            </position></workzag-jobs>"""
+
+        jobs = ats.fetch_personio("Indexa", "talento.jobs.personio.com")
+
+        self.assertEqual(jobs[0].source, "personio:talento")
+        self.assertEqual(jobs[0].source_job_id, "2707763")
+        self.assertEqual(jobs[0].location, "Madrid; Remoto")
+        self.assertEqual(
+            jobs[0].url,
+            "https://talento.jobs.personio.com/job/2707763",
+        )
+        self.assertEqual(jobs[0].description, "SQL")
+        self.assertEqual(
+            jobs[0].salary_text,
+            "24000.00 – 30000.00 EUR / yearly",
+        )
+        self.assertEqual(jobs[0].experience_text, "1-2 years of experience")
+
+    @patch("job_radar.connectors.ats.fetch_text", return_value="<html>")
+    def test_invalid_xml_is_a_recoverable_source_error(self, _fetch_text):
+        with self.assertRaises(ValueError):
+            ats.fetch_personio("Indexa", "talento.jobs.personio.com")
+
+
+class PinpointTests(unittest.TestCase):
+    @patch("job_radar.connectors.ats.fetch_json")
+    def test_postings_mapping(self, fetch_json):
+        fetch_json.return_value = {
+            "data": [{
+                "id": "575804",
+                "title": "Data Engineer",
+                "url": "https://carto.pinpointhq.com/en/postings/abc",
+                "location": {"name": "Spain or Argentina"},
+                "workplace_type": "remote",
+                "description": "<p>Pipelines.</p>",
+                "key_responsibilities": None,
+                "skills_knowledge_expertise": "<p>3 years of experience</p>",
+                "compensation_visible": False,
+                "compensation_minimum": 1,
+            }]
+        }
+
+        jobs = ats.fetch_pinpoint("CARTO", "carto")
+
+        self.assertEqual(jobs[0].source, "pinpoint:carto")
+        self.assertEqual(jobs[0].location, "Spain or Argentina; Remote")
+        self.assertIsNone(jobs[0].salary_text)
+        self.assertEqual(jobs[0].experience_text, "3 years of experience")
+
+
+class WorkableTests(unittest.TestCase):
+    @patch("job_radar.connectors.ats.fetch_json")
+    def test_listing_and_relevant_job_enrichment(self, fetch_json):
+        fetch_json.side_effect = [
+            {
+                "jobs": [
+                    {
+                        "shortcode": "AAA",
+                        "title": "Data Platform Engineer",
+                        "url": "https://apply.workable.com/j/AAA",
+                        "telecommuting": True,
+                        "locations": [
+                            {"city": "Madrid", "country": "Spain"},
+                            {"city": "Hidden", "hidden": True},
+                        ],
+                    },
+                    {
+                        "shortcode": "BBB",
+                        "title": "Account Executive",
+                        "url": "https://apply.workable.com/j/BBB",
+                        "locations": [],
+                    },
+                ]
+            },
+            {
+                "description": "<p>Python.</p>",
+                "requirements": "<p>2 years of experience.</p>",
+            },
+        ]
+
+        with self.assertLogs(ats.LOGGER, level="INFO"):
+            jobs = ats.fetch_workable("Yapily", "yapily")
+
+        self.assertEqual(jobs[0].source, "workable:yapily")
+        self.assertEqual(jobs[0].source_job_id, "AAA")
+        self.assertEqual(jobs[0].location, "Madrid, Spain; Remote")
+        self.assertEqual(jobs[0].experience_text, "2 years of experience")
+        self.assertEqual(jobs[1].description, "")
+        self.assertEqual(fetch_json.call_count, 2)
+
+
+class FactorialTests(unittest.TestCase):
+    PAGE = """
+        <select id="location_filter">
+          <option value="">All locations</option>
+          <option value="229308">Madrid</option>
+        </select>
+        <ul>
+          <li class="job-offer-item w-full" data-is-remote="true"
+              data-job-postings-url="https://embat.factorial.com/job_posting/backend-engineer-280456"
+              data-location-id="229308">
+            <div class="text-sm font-bold text-gray-500">Backend Engineer
+            </div>
+            <div class="text-sm font-normal">Technology</div>
+          </li>
+        </ul>
+    """
+
+    @patch("job_radar.connectors.ats.fetch_text")
+    def test_job_cards_mapping(self, fetch_text):
+        fetch_text.return_value = self.PAGE
+
+        jobs = ats.fetch_factorial("Embat", "embat.factorialhr.com")
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].source, "factorial:embat")
+        self.assertEqual(jobs[0].source_job_id, "280456")
+        self.assertEqual(jobs[0].title, "Backend Engineer")
+        self.assertEqual(jobs[0].location, "Madrid; Remote")
+
+    @patch("job_radar.connectors.ats.fetch_text")
+    def test_unparseable_cards_fail_visibly(self, fetch_text):
+        fetch_text.return_value = (
+            '<li class="job-offer-item" data-job-postings-url="/x"></li>'
+        )
+
+        with self.assertRaises(ValueError):
+            ats.fetch_factorial("Embat", "embat.factorialhr.com")
 
 
 class SmartRecruitersTests(unittest.TestCase):

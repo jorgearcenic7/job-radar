@@ -4,8 +4,11 @@ import re
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import unescape
+from html.parser import HTMLParser
+from http.client import HTTPException
 from urllib.parse import quote, urlencode
 from urllib.request import Request
+from xml.etree import ElementTree
 
 from job_radar.matching import extract_experience, extract_salary
 
@@ -762,3 +765,342 @@ def fetch_successfactors(company, host, identifier, url_template):
         })
 
     return _as_jobs(jobs)
+
+
+def _joined_locations(*values):
+    return "; ".join(dict.fromkeys(value for value in values if value))
+
+
+def fetch_recruitee(company, slug):
+    data = fetch_json(
+        f"https://{slug}.recruitee.com/api/offers/",
+        context=f"company={company!r} source=recruitee",
+    )
+    result = []
+
+    for offer in data["offers"]:
+        if offer.get("status") != "published":
+            continue
+
+        description = plain_text(
+            " ".join(
+                offer.get(field) or ""
+                for field in ("description", "requirements")
+            )
+        )
+        location = _joined_locations(
+            offer.get("location"),
+            *(
+                ", ".join(
+                    value
+                    for value in (item.get("city"), item.get("country"))
+                    if value
+                )
+                for item in offer.get("locations") or []
+            ),
+            "Remote" if offer.get("remote") else None,
+        )
+        salary = offer.get("salary") or {}
+
+        result.append({
+            "source": f"recruitee:{slug}",
+            "source_job_id": str(offer["id"]),
+            "company": company,
+            "title": offer["title"],
+            "location": location or None,
+            "url": offer["careers_url"],
+            "description": description,
+            "salary_text": (
+                lever_salary({**salary, "interval": salary.get("period")})
+                or extract_salary(description)
+            ),
+            "experience_text": extract_experience(description),
+        })
+
+    return _as_jobs(result)
+
+
+def _xml_text(element, path):
+    value = element.findtext(path)
+    return value.strip() if value else ""
+
+
+def fetch_personio(company, host):
+    body = fetch_text(
+        f"https://{host}/xml",
+        context=f"company={company!r} source=personio",
+    )
+
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as error:
+        raise ValueError(f"{company}: invalid Personio XML: {error}") from error
+
+    result = []
+
+    for position in root.iter("position"):
+        job_id = _xml_text(position, "id")
+        description = plain_text(
+            " ".join(
+                _xml_text(item, "value")
+                for item in position.iter("jobDescription")
+            )
+        )
+        location = _joined_locations(
+            _xml_text(position, "office"),
+            *(
+                (office.text or "").strip()
+                for office in position.findall("additionalOffices/office")
+            ),
+        )
+        salary = position.find("salaryInformation")
+        years = _xml_text(position, "yearsOfExperience")
+
+        result.append({
+            "source": f"personio:{host.split('.')[0]}",
+            "source_job_id": job_id,
+            "company": company,
+            "title": _xml_text(position, "name"),
+            "location": location or None,
+            "url": f"https://{host}/job/{job_id}",
+            "description": description,
+            "salary_text": (
+                lever_salary({
+                    "min": _xml_text(salary, "min") or None,
+                    "max": _xml_text(salary, "max") or None,
+                    "currency": _xml_text(salary, "currencyCode"),
+                    "interval": _xml_text(salary, "type"),
+                })
+                if salary is not None
+                else None
+            ) or extract_salary(description),
+            "experience_text": (
+                extract_experience(description)
+                or (f"{years} years of experience" if years else None)
+            ),
+        })
+
+    return _as_jobs(result)
+
+
+def fetch_pinpoint(company, slug):
+    data = fetch_json(
+        f"https://{slug}.pinpointhq.com/postings.json",
+        context=f"company={company!r} source=pinpoint",
+    )
+    result = []
+
+    for posting in data["data"]:
+        description = plain_text(
+            " ".join(
+                posting.get(field) or ""
+                for field in (
+                    "description",
+                    "key_responsibilities",
+                    "skills_knowledge_expertise",
+                )
+            )
+        )
+        location = _joined_locations(
+            (posting.get("location") or {}).get("name"),
+            "Remote" if posting.get("workplace_type") == "remote" else None,
+        )
+        salary = (
+            lever_salary({
+                "min": posting.get("compensation_minimum"),
+                "max": posting.get("compensation_maximum"),
+                "currency": posting.get("compensation_currency"),
+                "interval": posting.get("compensation_frequency"),
+            })
+            if posting.get("compensation_visible")
+            else None
+        )
+
+        result.append({
+            "source": f"pinpoint:{slug}",
+            "source_job_id": str(posting["id"]),
+            "company": company,
+            "title": posting["title"],
+            "location": location or None,
+            "url": posting["url"],
+            "description": description,
+            "salary_text": salary or extract_salary(description),
+            "experience_text": extract_experience(description),
+        })
+
+    return _as_jobs(result)
+
+
+def fetch_workable(company, account):
+    data = fetch_json(
+        f"https://apply.workable.com/api/v1/widget/accounts/{account}",
+        context=f"company={company!r} source=workable",
+    )
+    jobs = []
+
+    for posting in data["jobs"]:
+        locations = [
+            ", ".join(
+                value
+                for value in (item.get("city"), item.get("country"))
+                if value
+            )
+            for item in posting.get("locations") or []
+            if not item.get("hidden")
+        ]
+        jobs.append({
+            "source": f"workable:{account}",
+            "source_job_id": posting["shortcode"],
+            "company": company,
+            "title": posting["title"],
+            "location": _joined_locations(
+                *locations,
+                "Remote" if posting.get("telecommuting") else None,
+            ) or None,
+            "url": posting["url"],
+            "description": "",
+            "salary_text": None,
+            "experience_text": None,
+        })
+
+    # El widget no trae descripción: se enriquece solo lo relevante, como
+    # en SmartRecruiters, para no multiplicar peticiones en cuentas grandes.
+    enrichment_targets = [
+        job for job in jobs if workday_relevant_title(job["title"])
+    ]
+
+    def fetch_detail(job):
+        detail = fetch_json(
+            "https://apply.workable.com/api/v2/accounts/"
+            f"{account}/jobs/{job['source_job_id']}",
+            context=f"company={company!r} source=workable",
+        )
+        description = plain_text(
+            " ".join(
+                detail.get(field) or ""
+                for field in ("description", "requirements")
+            )
+        )
+        return job, {
+            "description": description,
+            "salary_text": extract_salary(description),
+            "experience_text": extract_experience(description),
+        }
+
+    failures = 0
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(fetch_detail, job)
+            for job in enrichment_targets
+        ]
+
+        for future in as_completed(futures):
+            try:
+                job, values = future.result()
+            except (OSError, HTTPException, ValueError) as error:
+                failures += 1
+                LOGGER.warning(
+                    "enrichment_detail_failed company=%r source=workable "
+                    "error_type=%s error_message=%r",
+                    company,
+                    type(error).__name__,
+                    str(error),
+                )
+                continue
+
+            job.update(values)
+
+    LOGGER.info(
+        "enrichment_finished company=%r source=workable enriched=%s "
+        "failures=%s",
+        company,
+        len(enrichment_targets) - failures,
+        failures,
+    )
+
+    return _as_jobs(jobs)
+
+
+class _FactorialJobsParser(HTMLParser):
+    """Lee las tarjetas ``li.job-offer-item`` y el filtro de ubicaciones."""
+
+    def __init__(self):
+        super().__init__()
+        self.locations = {}
+        self.jobs = []
+        self._option = None
+        self._job = None
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+
+        if tag == "option" and attrs.get("value"):
+            self._option = attrs["value"]
+        elif tag == "li" and "job-offer-item" in (attrs.get("class") or ""):
+            self._job = {
+                "url": attrs.get("data-job-postings-url"),
+                "location_id": attrs.get("data-location-id"),
+                "remote": attrs.get("data-is-remote") == "true",
+                "title": "",
+            }
+            self.jobs.append(self._job)
+        elif (
+            tag == "div"
+            and self._job is not None
+            and not self._job["title"]
+            and "font-bold" in (attrs.get("class") or "")
+        ):
+            self._in_title = True
+
+    def handle_endtag(self, tag):
+        if tag == "option":
+            self._option = None
+        elif tag == "div":
+            self._in_title = False
+        elif tag == "li":
+            self._job = None
+
+    def handle_data(self, data):
+        if self._option is not None:
+            self.locations[self._option] = data.strip()
+        elif self._in_title:
+            self._job["title"] += data.strip()
+
+
+def fetch_factorial(company, host):
+    parser = _FactorialJobsParser()
+    parser.feed(
+        fetch_text(
+            f"https://{host}/",
+            context=f"company={company!r} source=factorial",
+        )
+    )
+    result = []
+
+    for job in parser.jobs:
+        match = re.search(r"/job_posting/[\w-]*?(\d+)/?$", job["url"] or "")
+
+        if not match or not job["title"]:
+            continue
+
+        result.append({
+            "source": f"factorial:{host.split('.')[0]}",
+            "source_job_id": match.group(1),
+            "company": company,
+            "title": job["title"],
+            "location": _joined_locations(
+                parser.locations.get(job["location_id"]),
+                "Remote" if job["remote"] else None,
+            ) or None,
+            "url": job["url"],
+            "description": "",
+            "salary_text": None,
+            "experience_text": None,
+        })
+
+    if parser.jobs and not result:
+        raise ValueError(f"{company}: Factorial job cards found but none parsed")
+
+    return _as_jobs(result)
