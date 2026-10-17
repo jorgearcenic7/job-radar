@@ -8,10 +8,15 @@ from .ats import (
     fetch_ashby,
     fetch_bamboohr,
     fetch_eightfold,
+    fetch_factorial,
     fetch_greenhouse,
     fetch_lever,
+    fetch_personio,
+    fetch_pinpoint,
+    fetch_recruitee,
     fetch_smartrecruiters,
     fetch_successfactors,
+    fetch_workable,
     fetch_workday,
 )
 from .custom import (
@@ -26,6 +31,7 @@ from .custom import (
     fetch_sage,
     fetch_seedtag,
     fetch_spendesk,
+    fetch_teamtailor_company,
     fetch_thetaray,
     fetch_visma,
 )
@@ -149,6 +155,17 @@ SUCCESSFACTORS_COMPANIES = {
     ),
 }
 
+RECRUITEE_COMPANIES = {"SeQura": "sequra", "Holded": "holded"}
+PERSONIO_COMPANIES = {
+    "Indexa Capital": "talento-indexa-capital.jobs.personio.com",
+}
+PINPOINT_COMPANIES = {"CARTO": "carto"}
+WORKABLE_COMPANIES = {"Kantox": "kantox", "Yapily": "yapily"}
+TEAMTAILOR_COMPANIES = {
+    "Freepik": ("https://careers.freepik.com", "teamtailor:freepik"),
+    "PayFit": ("https://careers.payfit.com", "teamtailor:payfit"),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class FunctionConnector:
@@ -199,6 +216,15 @@ CONNECTORS = tuple(
         "successfactors",
         SUCCESSFACTORS_COMPANIES,
         fetch_successfactors,
+    )
+    + _configured("recruitee", RECRUITEE_COMPANIES, fetch_recruitee)
+    + _configured("personio", PERSONIO_COMPANIES, fetch_personio)
+    + _configured("pinpoint", PINPOINT_COMPANIES, fetch_pinpoint)
+    + _configured("workable", WORKABLE_COMPANIES, fetch_workable)
+    + _configured(
+        "teamtailor",
+        TEAMTAILOR_COMPANIES,
+        fetch_teamtailor_company,
     )
     + [
         FunctionConnector(
@@ -256,6 +282,14 @@ CONNECTORS = tuple(
         ),
         FunctionConnector(
             "Sage", "sagepeople", fetch_sage,
+            catch_all=True,
+        ),
+        # Factorial no expone API ni datos estructurados: se lee el HTML de
+        # la página de empleo, así que cualquier cambio de maqueta se aísla.
+        FunctionConnector(
+            "Embat",
+            "factorial",
+            partial(fetch_factorial, "Embat", "embat.factorialhr.com"),
             catch_all=True,
         ),
     ]

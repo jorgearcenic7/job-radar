@@ -6,7 +6,7 @@ parámetros, orden y flags.
 ## Catálogo
 
 <!-- BEGIN GENERATED SOURCE CATALOG -->
-El registro actual contiene **97 fuentes**.
+El registro actual contiene **106 fuentes**.
 
 | Empresa | Tipo / `source` | Modo | `catch_all` |
 | --- | --- | --- | --- |
@@ -95,6 +95,14 @@ El registro actual contiene **97 fuentes**.
 | PayPal | `eightfold` | required | no |
 | SAP | `successfactors` | required | no |
 | Hexagon | `successfactors` | required | no |
+| SeQura | `recruitee` | required | no |
+| Holded | `recruitee` | required | no |
+| Indexa Capital | `personio` | required | no |
+| CARTO | `pinpoint` | required | no |
+| Kantox | `workable` | required | no |
+| Yapily | `workable` | required | no |
+| Freepik | `teamtailor` | required | no |
+| PayFit | `teamtailor` | required | no |
 | Ant Group / Ant International | `portal propio` | required | sí |
 | Spendesk | `teamtailor` | required | sí |
 | ThetaRay | `comeet` | required | sí |
@@ -107,6 +115,7 @@ El registro actual contiene **97 fuentes**.
 | Dassault Systèmes | `portal propio` | required | sí |
 | Visma | `portal propio` | required | sí |
 | Sage | `sagepeople` | required | sí |
+| Embat | `factorial` | required | sí |
 <!-- END GENERATED SOURCE CATALOG -->
 
 Las fuentes configuradas mediante diccionarios y `_configured` reutilizan los
@@ -120,6 +129,13 @@ Reutiliza un conector de `job_radar/connectors/ats.py` cuando el career site exp
 contrato y solo cambien slug, tenant, host o plantilla de URL. Añadir una
 empresa suele requerir una entrada en el diccionario correspondiente y un test
 de configuración.
+
+Conectores reutilizables disponibles: Greenhouse, Ashby, Lever (host de EE.
+UU.), Workday, SmartRecruiters, SuccessFactors, BambooHR, Eightfold, Deel,
+Recruitee, Personio (feed XML), Pinpoint, Workable (widget público más
+detalle de los títulos relevantes) y Teamtailor (`fetch_teamtailor_company`).
+Factorial no expone API ni JSON-LD: `fetch_factorial` lee las tarjetas HTML
+de la página de empleo y cada empresa se registra con `catch_all=True`.
 
 Un conector custom solo se justifica cuando ningún conector reutilizable puede
 obtener el listado y los detalles necesarios. Antes de crearlo, documenta por
