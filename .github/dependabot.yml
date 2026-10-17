@@ -36,3 +36,9 @@ updates:
       time: "07:45"
       timezone: Europe/Madrid
     open-pull-requests-limit: 5
+    groups:
+      # init y analyze deben ir en la misma versión: en PRs separadas,
+      # ninguna puede pasar CodeQL por sí sola.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
