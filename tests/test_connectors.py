@@ -841,8 +841,34 @@ class NewCompanyConfigurationTests(unittest.TestCase):
 
         self.assertEqual(
             len(registry.CONNECTORS),
-            56 + len(greenhouse_companies) + len(ashby_companies),
+            69 + len(greenhouse_companies) + len(ashby_companies),
         )
+
+    def test_spain_product_and_fintech_sources_are_configured(self):
+        expected = [
+            (registry.GREENHOUSE_COMPANIES, {
+                "Wallapop": "wallapop",
+                "Databricks": "databricks",
+                "Fivetran": "fivetran",
+                "SumUp": "sumup",
+                "Bitpanda": "bitpanda",
+            }),
+            (registry.ASHBY_COMPANIES, {
+                "Preply": "preply",
+                "Perk (TravelPerk)": "perk",
+                "Docplanner (Doctoralia)": "docplanner",
+                "Pennylane": "pennylane",
+                "Kraken": "kraken.com",
+                "Alan": "alan",
+                "Satispay": "satispay",
+            }),
+            (registry.LEVER_COMPANIES, {"Jobandtalent": "jobandtalent"}),
+        ]
+
+        for companies, slugs in expected:
+            for company, slug in slugs.items():
+                with self.subTest(company=company):
+                    self.assertEqual(companies[company], slug)
 
     def test_requested_companies_are_configured(self):
         self.assertIn("Celonis", registry.GREENHOUSE_COMPANIES)

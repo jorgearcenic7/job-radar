@@ -66,7 +66,7 @@ La explicación completa está en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Fuentes configuradas
 
 <!-- BEGIN GENERATED SOURCE CATALOG -->
-Job Radar consulta **69 fuentes empresa/ATS** configuradas en código.
+Job Radar consulta **82 fuentes empresa/ATS** configuradas en código.
 <!-- END GENERATED SOURCE CATALOG -->
 
 `job_radar/connectors/registry.py` es la fuente de verdad. El catálogo detallado
