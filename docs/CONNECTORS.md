@@ -6,7 +6,7 @@ parámetros, orden y flags.
 ## Catálogo
 
 <!-- BEGIN GENERATED SOURCE CATALOG -->
-El registro actual contiene **82 fuentes**.
+El registro actual contiene **97 fuentes**.
 
 | Empresa | Tipo / `source` | Modo | `catch_all` |
 | --- | --- | --- | --- |
@@ -42,6 +42,11 @@ El registro actual contiene **82 fuentes**.
 | Fivetran | `greenhouse` | required | no |
 | SumUp | `greenhouse` | required | no |
 | Bitpanda | `greenhouse` | required | no |
+| Elastic | `greenhouse` | required | no |
+| GitLab | `greenhouse` | required | no |
+| Grafana Labs | `greenhouse` | required | no |
+| TheFork | `greenhouse` | required | no |
+| Payhawk | `greenhouse` | required | no |
 | Pleo | `ashby` | required | no |
 | Plaid | `ashby` | required | no |
 | Qonto | `ashby` | required | no |
@@ -65,6 +70,14 @@ El registro actual contiene **82 fuentes**.
 | Kraken | `ashby` | required | no |
 | Alan | `ashby` | required | no |
 | Satispay | `ashby` | required | no |
+| ElevenLabs | `ashby` | required | no |
+| Oyster HR | `ashby` | required | no |
+| Amenitiz | `ashby` | required | no |
+| Pliant | `ashby` | required | no |
+| Mistral AI | `ashby` | required | no |
+| Prefect | `ashby` | required | no |
+| PostHog | `ashby` | required | no |
+| Primer | `ashby` | required | no |
 | Mastercard | `workday` | required | no |
 | BBVA | `workday` | required | no |
 | Santander | `workday` | required | no |
@@ -75,6 +88,8 @@ El registro actual contiene **82 fuentes**.
 | Grab / Grab Financial Group | `smartrecruiters` | required | no |
 | Paytm | `lever` | required | no |
 | Jobandtalent | `lever` | required | no |
+| Metabase | `lever` | required | no |
+| Tinybird | `lever` | required | no |
 | Klarna | `deel` | required | no |
 | Flutterwave | `bamboohr` | required | no |
 | PayPal | `eightfold` | required | no |
