@@ -44,6 +44,17 @@ class IncompleteSnapshot(list):
         super().__init__(jobs)
         self.failed_ids = frozenset(failed_ids)
 
+    def __eq__(self, other):
+        if not isinstance(other, IncompleteSnapshot):
+            return NotImplemented
+        return list.__eq__(self, other) and self.failed_ids == other.failed_ids
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
+
 
 def as_jobs(values):
     return [
