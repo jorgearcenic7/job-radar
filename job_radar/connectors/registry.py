@@ -43,7 +43,6 @@ GREENHOUSE_COMPANIES = {
     "SoFi": "sofi",
     "Coinbase": "coinbase",
     "Datadog": "datadog",
-    "Clarity AI": "clarityai",
     "Fever": "feverup",
     "Cabify": "cabify",
     "Aircall": "aircallioinc",

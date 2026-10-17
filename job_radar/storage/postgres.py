@@ -1,11 +1,20 @@
 import logging
 import os
+from collections.abc import Collection
 from typing import Any
 
 from job_radar.domain import PreparedJob
 
 
 LOGGER = logging.getLogger(__name__)
+
+# Una oferta activa que lleva este tiempo sin verse respecto a la última
+# ingesta pertenece a una fuente que falla en varias ejecuciones seguidas
+# (cron cada 2 días): su enlace ya no está verificado. Sigue activa en el
+# lifecycle, pero no se recomienda. Medirlo contra la última ingesta, y no
+# contra el reloj, evita vaciar el listado si se detiene todo el pipeline.
+# Mantener sincronizado con STALE_AFTER_DAYS en web/src/app/page.tsx.
+STALE_AFTER_DAYS = 7
 
 
 def get_active_matches() -> list[dict[str, Any]]:
@@ -25,7 +34,11 @@ def get_active_matches() -> list[dict[str, Any]]:
                     url,
                     salary_text,
                     experience_text,
-                    match_status
+                    match_status,
+                    first_seen_at,
+                    last_seen_at >= (
+                        SELECT MAX(last_seen_at) FROM jobs WHERE active
+                    ) - make_interval(days => %s) AS fresh
                 FROM jobs
                 WHERE active = TRUE
                   AND selected = TRUE
@@ -37,12 +50,24 @@ def get_active_matches() -> list[dict[str, Any]]:
                     company,
                     title,
                     source_job_id
-                """
+                """,
+                (STALE_AFTER_DAYS,),
             )
 
             fields = [column.name for column in cursor.description]
+            rows = [dict(zip(fields, row)) for row in cursor.fetchall()]
 
-            return [dict(zip(fields, row)) for row in cursor.fetchall()]
+    matches = [row for row in rows if row.pop("fresh")]
+    hidden = len(rows) - len(matches)
+
+    if hidden:
+        LOGGER.warning(
+            "stale_matches_hidden count=%s stale_after_days=%s",
+            hidden,
+            STALE_AFTER_DAYS,
+        )
+
+    return matches
 
 
 def save_jobs(
@@ -50,6 +75,7 @@ def save_jobs(
     company: str,
     *,
     close_missing: bool = True,
+    keep_ids: Collection[str] = (),
 ) -> tuple[int, int]:
     import psycopg
 
@@ -140,22 +166,20 @@ def save_jobs(
 
             new_count = len(current_ids - existing_ids)
 
-            for prepared in prepared_jobs:
-                job = prepared.job
-
-                cursor.execute(
-                    sql,
+            cursor.executemany(
+                sql,
+                [
                     (
-                        job.source,
-                        job.source_job_id,
-                        job.company,
-                        job.title,
-                        job.location,
+                        prepared.job.source,
+                        prepared.job.source_job_id,
+                        prepared.job.company,
+                        prepared.job.title,
+                        prepared.job.location,
                         list(prepared.countries),
-                        job.url,
-                        job.description,
-                        job.salary_text,
-                        job.experience_text,
+                        prepared.job.url,
+                        prepared.job.description,
+                        prepared.job.salary_text,
+                        prepared.job.experience_text,
                         prepared.selected,
                         prepared.match_status,
                         prepared.match_reason,
@@ -165,8 +189,10 @@ def save_jobs(
                             if prepared.match_reason_codes is not None
                             else None
                         ),
-                    ),
-                )
+                    )
+                    for prepared in prepared_jobs
+                ],
+            )
 
             closed_count = 0
 
@@ -184,7 +210,7 @@ def save_jobs(
                     (
                         company,
                         source,
-                        list(current_ids),
+                        list(current_ids | set(keep_ids)),
                     ),
                 )
 

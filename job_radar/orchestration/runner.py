@@ -1,9 +1,10 @@
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 
-from job_radar.connectors import CONNECTORS, Connector
+from job_radar.connectors import CONNECTORS, Connector, IncompleteSnapshot
 from job_radar.matching import prepare_job
 from job_radar.notifications import send_match_notification
 from job_radar.observability import HEALTH_WINDOW, build_source_health
@@ -56,7 +57,14 @@ def process_connector(
     repository: RunRepository,
 ) -> None:
     jobs = connector.fetch()
-    metrics.jobs_seen = len(jobs)
+    # IDs listados cuyo detalle falló: siguen publicados, así que cuentan
+    # para el snapshot y no se cierran.
+    kept_ids = (
+        jobs.failed_ids
+        if isinstance(jobs, IncompleteSnapshot)
+        else frozenset()
+    )
+    metrics.jobs_seen = len(jobs) + len(kept_ids)
     prepared_jobs = []
 
     for job in jobs:
@@ -70,6 +78,17 @@ def process_connector(
         limit=SNAPSHOT_HISTORY_LIMIT,
     )
     assessment = evaluate_snapshot(metrics.jobs_seen, history)
+
+    if kept_ids:
+        LOGGER.warning(
+            "snapshot_incomplete company=%r source=%s jobs_seen=%s "
+            "detail_failures=%s",
+            connector.company,
+            connector.source,
+            metrics.jobs_seen,
+            len(kept_ids),
+        )
+
     metrics.snapshot_status = assessment.status
     metrics.closure_suppressed = assessment.closure_suppressed
 
@@ -90,6 +109,7 @@ def process_connector(
         prepared_jobs,
         connector.company,
         close_missing=not assessment.closure_suppressed,
+        keep_ids=kept_ids,
     )
 
 
@@ -118,6 +138,7 @@ def run(run_repository: RunRepository | None = None) -> int:
     _configure_logging()
     repository = run_repository or RunRepository()
     run_metrics = RunMetrics()
+    run_started_at = datetime.now(timezone.utc)
     run_id = repository.create_ingestion_run(len(CONNECTORS))
     blocking_failure = False
     notification_failed = False
@@ -230,6 +251,7 @@ def run(run_repository: RunRepository | None = None) -> int:
             send_match_notification(
                 partial=blocking_failure,
                 source_health=source_health,
+                new_since=run_started_at,
             )
         except Exception as error:
             blocking_failure = True

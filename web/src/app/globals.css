@@ -39,6 +39,18 @@ input {
   outline-offset: 3px;
 }
 
+:focus-visible {
+  outline: 2px solid var(--emerald-dark);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
+
 .hero {
   position: relative;
   overflow: hidden;
@@ -99,6 +111,11 @@ input {
   border-radius: 9999px;
   background: #34d399;
   box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.1);
+}
+
+.status-dot-stale {
+  background: #fbbf24;
+  box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.12);
 }
 
 .stats-grid {
@@ -217,7 +234,7 @@ input {
 
 .search-field:focus-within {
   background: white;
-  box-shadow: inset 0 0 0 1px #9edbc7;
+  box-shadow: inset 0 0 0 2px var(--emerald-dark);
 }
 
 .search-field input {
@@ -230,7 +247,7 @@ input {
 }
 
 .search-field input::placeholder {
-  color: #98a2b3;
+  color: #667085;
 }
 
 .company-select {
@@ -244,8 +261,8 @@ input {
   outline: none;
 }
 
-.company-select:focus {
-  box-shadow: inset 0 0 0 1px #9edbc7;
+.company-select:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--emerald-dark);
 }
 
 .match-toggle {
@@ -389,6 +406,24 @@ input {
   background: #22a06b;
 }
 
+.match-badge-stretch {
+  background: #fff7e6;
+  color: #93500a;
+}
+
+.match-badge-stretch span {
+  background: #d97706;
+}
+
+.new-badge {
+  border-radius: 9999px;
+  background: #eef4ff;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #2f4fb8;
+}
+
 .job-title {
   max-width: 720px;
   overflow-wrap: anywhere;
@@ -405,7 +440,7 @@ input {
   gap: 6px;
   margin-top: 10px;
   font-size: 12px;
-  color: #7a8496;
+  color: #667085;
 }
 
 .job-link {
@@ -462,7 +497,7 @@ input {
 .empty-state p {
   margin-top: 5px;
   font-size: 13px;
-  color: #7a8496;
+  color: #667085;
 }
 
 ::selection {

@@ -1,10 +1,19 @@
 import { db } from "@/lib/db";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
 const MAX_FILTER_LENGTH = 120;
 const MAX_PAGE = 500;
+const PAGE_SIZE = 20;
+// Ofertas sin ver en este tiempo respecto a la última ingesta pertenecen a
+// fuentes que fallan: su enlace ya no está verificado. Mantener sincronizado
+// con STALE_AFTER_DAYS en job_radar/storage/postgres.py.
+const STALE_AFTER_DAYS = 7;
+// El cron corre cada 2 días; más de 3 sin datos indica un pipeline parado.
+const UPDATE_OVERDUE_HOURS = 72;
+const NEW_JOB_DAYS = 3;
 
 function boundedParam(value: string | string[] | undefined, fallback = "") {
   return typeof value === "string"
@@ -55,7 +64,22 @@ type Job = {
   salary_text: string | null;
   experience_text: string | null;
   selected: boolean;
+  match_status: string | null;
+  is_new: boolean;
 };
+
+function formatElapsed(seconds: number) {
+  const format = new Intl.RelativeTimeFormat("es", { numeric: "auto" });
+  const hours = Math.floor(seconds / 3600);
+
+  if (hours < 1) {
+    return format.format(-Math.max(1, Math.floor(seconds / 60)), "minute");
+  }
+
+  return hours < 48
+    ? format.format(-hours, "hour")
+    : format.format(-Math.floor(hours / 24), "day");
+}
 
 type Params = {
   q?: string | string[];
@@ -89,25 +113,46 @@ export default async function Home({
       ? Math.min(requestedPage, MAX_PAGE)
       : 1;
 
-  const pageSize = 20;
-  const offset = (page - 1) * pageSize;
+  const offset = (page - 1) * PAGE_SIZE;
+
+  const freshness = await db.query<{
+    cutoff: Date | null;
+    seconds_since_update: number | null;
+  }>(
+    `SELECT
+      MAX(last_seen_at) - make_interval(days => $1) AS cutoff,
+      EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - MAX(last_seen_at))::int
+        AS seconds_since_update
+    FROM jobs
+    WHERE active = true`,
+    [STALE_AFTER_DAYS]
+  );
+  const { cutoff, seconds_since_update: secondsSinceUpdate } =
+    freshness.rows[0];
 
   const [summary, companies, countries, resultCount, results] =
     await Promise.all([
-    db.query<{ total: number; selected: number }>(`
-      SELECT
+    db.query<{ total: number; selected: number }>(
+      `SELECT
         COUNT(*)::int AS total,
         COUNT(*) FILTER (WHERE selected)::int AS selected
       FROM jobs
       WHERE active = true
-    `),
-
-    db.query<{ company: string }>(
-      "SELECT DISTINCT company FROM jobs WHERE active = true ORDER BY company"
+        AND last_seen_at >= $1`,
+      [cutoff]
     ),
 
-    db.query<{ country: string }>(`
-      SELECT DISTINCT country
+    db.query<{ company: string }>(
+      `SELECT DISTINCT company
+      FROM jobs
+      WHERE active = true
+        AND last_seen_at >= $1
+      ORDER BY company`,
+      [cutoff]
+    ),
+
+    db.query<{ country: string }>(
+      `SELECT DISTINCT country
       FROM jobs
       CROSS JOIN LATERAL
         unnest(
@@ -117,14 +162,17 @@ export default async function Home({
           )
         ) AS c(country)
       WHERE active = true
+        AND last_seen_at >= $1
         AND country <> ''
-      ORDER BY country
-    `),
+      ORDER BY country`,
+      [cutoff]
+    ),
 
     db.query<{ total: number }>(
       `SELECT COUNT(*)::int AS total
       FROM jobs
       WHERE active = true
+        AND last_seen_at >= $5
         AND ($1 = '' OR strpos(lower(title), lower($1)) > 0)
         AND ($2 = '' OR company = $2)
         AND (
@@ -137,7 +185,7 @@ export default async function Home({
           )
         )
         AND ($4::boolean = false OR selected = true)`,
-      [q, company, country, selected]
+      [q, company, country, selected, cutoff]
     ),
 
     db.query<Job>(
@@ -150,9 +198,13 @@ export default async function Home({
         url,
         salary_text,
         experience_text,
-        selected
+        selected,
+        match_status,
+        first_seen_at >= CURRENT_TIMESTAMP - make_interval(days => $8)
+          AS is_new
       FROM jobs
       WHERE active = true
+        AND last_seen_at >= $7
         AND ($1 = '' OR strpos(lower(title), lower($1)) > 0)
         AND ($2 = '' OR company = $2)
         AND (
@@ -168,13 +220,22 @@ export default async function Home({
       ORDER BY selected DESC, company, title, source_job_id
       LIMIT $5
       OFFSET $6`,
-      [q, company, country, selected, pageSize, offset]
+      [
+        q,
+        company,
+        country,
+        selected,
+        PAGE_SIZE,
+        offset,
+        cutoff,
+        NEW_JOB_DAYS,
+      ]
     ),
   ]);
 
   const stats = summary.rows[0];
   const totalResults = resultCount.rows[0].total;
-  const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
+  const totalPages = Math.max(1, Math.ceil(totalResults / PAGE_SIZE));
   const firstResult = totalResults === 0 ? 0 : offset + 1;
   const lastResult = Math.min(offset + results.rows.length, totalResults);
 
@@ -190,6 +251,14 @@ export default async function Home({
     const queryString = query.toString();
     return queryString ? `/?${queryString}` : "/";
   };
+
+  if (page > totalPages) {
+    redirect(pageHref(totalPages));
+  }
+
+  const updateOverdue =
+    secondsSinceUpdate === null ||
+    secondsSinceUpdate > UPDATE_OVERDUE_HOURS * 3600;
 
   const matchRate =
     stats.total > 0
@@ -211,9 +280,17 @@ export default async function Home({
               </span>
             </div>
 
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
-              <span className="status-dot" />
-              Actualización automática
+            <div
+              className={`flex items-center gap-2 text-xs font-medium ${
+                updateOverdue ? "text-amber-300" : "text-slate-400"
+              }`}
+            >
+              <span
+                className={`status-dot ${updateOverdue ? "status-dot-stale" : ""}`}
+              />
+              {secondsSinceUpdate === null
+                ? "Sin datos de actualización"
+                : `Actualizado ${formatElapsed(secondsSinceUpdate)}`}
             </div>
           </nav>
 
@@ -405,11 +482,19 @@ export default async function Home({
                       </span>
 
                       {job.selected && (
-                        <span className="match-badge">
+                        <span
+                          className={`match-badge ${
+                            job.match_status === "Stretch"
+                              ? "match-badge-stretch"
+                              : ""
+                          }`}
+                        >
                           <span />
-                          Coincidencia
+                          {job.match_status ?? "Coincidencia"}
                         </span>
                       )}
+
+                      {job.is_new && <span className="new-badge">Nueva</span>}
                     </div>
 
                     <h3 className="job-title">
@@ -463,12 +548,12 @@ export default async function Home({
               aria-label="Paginación de ofertas"
             >
               {page > 1 ? (
-                <a
+                <Link
                   href={pageHref(page - 1)}
                   className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:text-slate-950"
                 >
                   ← Anterior
-                </a>
+                </Link>
               ) : (
                 <span className="cursor-not-allowed rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-300">
                   ← Anterior
@@ -480,12 +565,12 @@ export default async function Home({
               </span>
 
               {page < totalPages ? (
-                <a
+                <Link
                   href={pageHref(page + 1)}
                   className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:text-slate-950"
                 >
                   Siguiente →
-                </a>
+                </Link>
               ) : (
                 <span className="cursor-not-allowed rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-300">
                   Siguiente →
@@ -495,10 +580,10 @@ export default async function Home({
           )}
         </section>
 
-        <footer className="mt-14 flex flex-col justify-between gap-2 border-t border-slate-200 pt-6 text-xs text-slate-400 sm:flex-row">
+        <footer className="mt-14 flex flex-col justify-between gap-2 border-t border-slate-200 pt-6 text-xs text-slate-500 sm:flex-row">
           <p>Job Radar · Personal Data Engineering Job Monitor</p>
 
-          <p>20 ofertas por página</p>
+          <p>{PAGE_SIZE} ofertas por página</p>
         </footer>
       </div>
     </main>

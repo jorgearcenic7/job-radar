@@ -5,6 +5,7 @@ import unittest
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from job_radar import matching, notifications
 from job_radar.connectors import ats, common, custom
@@ -17,7 +18,7 @@ class JsonResponse:
     def __init__(self, payload):
         self.payload = payload
 
-    def read(self):
+    def read(self, _size=-1):
         return json.dumps(self.payload).encode("utf-8")
 
     def __enter__(self):
@@ -305,6 +306,84 @@ class EmailNotificationTests(unittest.TestCase):
         self.assertEqual(headers["authorization"], "Bearer re_test")
         self.assertEqual(headers["idempotency-key"], "job-radar/run-123")
 
+    def test_email_separates_new_matches(self):
+        run_started_at = datetime(2026, 10, 17, 8, tzinfo=timezone.utc)
+        new = self.make_match()
+        new["title"] = "Fresh Role"
+        new["first_seen_at"] = datetime(
+            2026, 10, 17, 8, 5, tzinfo=timezone.utc
+        )
+        old = self.make_match()
+        old["title"] = "Known Role"
+        old["first_seen_at"] = datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+        subject, html, text = notifications.build_match_email(
+            [old, new],
+            new_since=run_started_at,
+        )
+
+        self.assertIn("2 coincidencias · 1 nueva", subject)
+        self.assertIn("Nuevas en esta ejecución (1)", html)
+        self.assertIn("Resto de coincidencias activas (1)", html)
+        self.assertLess(text.index("Fresh Role"), text.index("Known Role"))
+
+    @patch("job_radar.notifications.email.get_active_matches")
+    @patch("job_radar.notifications.email.urlopen")
+    def test_send_notification_retries_transient_resend_errors(
+        self,
+        urlopen,
+        get_active_matches,
+    ):
+        get_active_matches.return_value = [self.make_match()]
+        unavailable = HTTPError(
+            notifications.RESEND_EMAILS_URL, 503, "unavailable", {}, None
+        )
+        self.addCleanup(unavailable.close)
+        urlopen.side_effect = [unavailable, JsonResponse({"id": "email-1"})]
+        environment = {
+            "RESEND_API_KEY": "re_test",
+            "NOTIFICATION_EMAIL": "recipient@example.com",
+            "NOTIFICATION_RUN_ID": "",
+        }
+
+        with patch.dict(os.environ, environment, clear=False):
+            with patch("job_radar.connectors.common.time.sleep"):
+                with self.assertLogs(common.LOGGER, level="WARNING"):
+                    result = notifications.send_match_notification()
+
+        self.assertEqual(result, "email-1")
+        keys = [
+            call.args[0].get_header("Idempotency-key")
+            for call in urlopen.call_args_list
+        ]
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(keys[0], keys[1])
+        self.assertTrue(keys[0].startswith("job-radar/"))
+
+    @patch("job_radar.notifications.email.get_active_matches")
+    @patch("job_radar.notifications.email.urlopen")
+    def test_send_notification_does_not_retry_validation_errors(
+        self,
+        urlopen,
+        get_active_matches,
+    ):
+        get_active_matches.return_value = [self.make_match()]
+        invalid = HTTPError(
+            notifications.RESEND_EMAILS_URL, 422, "invalid", {}, None
+        )
+        self.addCleanup(invalid.close)
+        urlopen.side_effect = invalid
+        environment = {
+            "RESEND_API_KEY": "re_test",
+            "NOTIFICATION_EMAIL": "recipient@example.com",
+        }
+
+        with patch.dict(os.environ, environment, clear=False):
+            with self.assertRaises(HTTPError):
+                notifications.send_match_notification()
+
+        urlopen.assert_called_once()
+
     @patch("job_radar.notifications.email.get_active_matches")
     def test_notification_is_disabled_without_api_key(
         self,
@@ -537,6 +616,77 @@ class DeelBoardTests(unittest.TestCase):
         self.assertEqual(jobs[0].company, "Klarna")
         self.assertEqual(jobs[0].location, "Stockholm, Sweden")
 
+    @patch("job_radar.connectors.custom.fetch_deel_job")
+    @patch("job_radar.connectors.custom.fetch_text")
+    def test_failed_details_mark_snapshot_incomplete(
+        self,
+        fetch_text,
+        fetch_deel_job,
+    ):
+        ids = [
+            "161d3133-1185-405b-a037-0f5aa14ee60b",
+            "261d3133-1185-405b-a037-0f5aa14ee60b",
+        ]
+        fetch_text.return_value = "".join(
+            f'<a href="/klarna/job-details/{job_id}/overview">Role</a>'
+            for job_id in ids
+        )
+        job = Job(
+            source="deel:klarna",
+            source_job_id=ids[0],
+            company="Klarna",
+            title="Data Engineer",
+            location="Stockholm, Sweden",
+            url=f"https://jobs.deel.com/klarna/job-details/{ids[0]}/overview",
+            description="",
+            salary_text=None,
+            experience_text=None,
+        )
+
+        def fetch_detail(job_id, *_args):
+            if job_id != ids[0]:
+                raise TimeoutError("detail timed out")
+            return job
+
+        fetch_deel_job.side_effect = fetch_detail
+
+        with self.assertLogs(custom.LOGGER, level="WARNING") as logs:
+            jobs = custom.fetch_deel_company("Klarna", "klarna")
+
+        self.assertIsInstance(jobs, common.IncompleteSnapshot)
+        self.assertEqual(jobs.failed_ids, {ids[1]})
+        self.assertEqual([item.source_job_id for item in jobs], [ids[0]])
+        self.assertIn("error_types=TimeoutError", "\n".join(logs.output))
+        self.assertIn(f"failed_ids={ids[1]}", "\n".join(logs.output))
+
+    @patch("job_radar.connectors.custom.fetch_text")
+    def test_detail_without_jsonld_is_kept_as_listed(self, fetch_text):
+        ids = [
+            "161d3133-1185-405b-a037-0f5aa14ee60b",
+            "261d3133-1185-405b-a037-0f5aa14ee60b",
+        ]
+        listing = "".join(
+            f'<a href="/klarna/job-details/{job_id}/overview">Role</a>'
+            for job_id in ids
+        )
+        detail = """
+            <script type="application/ld+json">
+            {"@type": "JobPosting", "title": "Data Engineer",
+             "description": "Python."}
+            </script>
+        """
+        fetch_text.side_effect = lambda url, **_kwargs: (
+            listing if url.endswith("/klarna")
+            else detail if ids[0] in url
+            else "<html>challenge</html>"
+        )
+
+        with self.assertLogs(custom.LOGGER, level="WARNING") as logs:
+            jobs = custom.fetch_deel_company("Klarna", "klarna")
+
+        self.assertEqual(jobs.failed_ids, {ids[1]})
+        self.assertIn("missing_jsonld", "\n".join(logs.output))
+
 
 class AntGroupTests(unittest.TestCase):
     @patch("job_radar.connectors.common.urlopen")
@@ -630,6 +780,33 @@ class WorkdayTests(unittest.TestCase):
         self.assertEqual(jobs[1].description, "")
         self.assertEqual(urlopen.call_count, 2)
 
+    @patch("job_radar.connectors.common.time.sleep")
+    @patch("job_radar.connectors.common.urlopen")
+    def test_workday_retries_empty_listing_body(self, urlopen, _sleep):
+        empty = JsonResponse(None)
+        empty.read = lambda _size=-1: b""
+        urlopen.side_effect = [
+            empty,
+            JsonResponse({
+                "jobPostings": [{
+                    "title": "Sales Executive",
+                    "locationsText": "Madrid, Spain",
+                    "externalPath": "/job/Madrid/Sales_R456",
+                }]
+            }),
+        ]
+
+        with self.assertLogs(common.LOGGER, level="WARNING"):
+            jobs = ats.fetch_workday(
+                "Example Bank",
+                "example.wd3.myworkdayjobs.com",
+                "example",
+                "Careers",
+            )
+
+        self.assertEqual([job.source_job_id for job in jobs], ["Sales_R456"])
+        self.assertEqual(urlopen.call_count, 2)
+
 
 class NewCompanyConfigurationTests(unittest.TestCase):
     def test_product_software_and_fintech_sources_are_configured(self):
@@ -664,7 +841,7 @@ class NewCompanyConfigurationTests(unittest.TestCase):
 
         self.assertEqual(
             len(registry.CONNECTORS),
-            57 + len(greenhouse_companies) + len(ashby_companies),
+            56 + len(greenhouse_companies) + len(ashby_companies),
         )
 
     def test_requested_companies_are_configured(self):

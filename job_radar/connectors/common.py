@@ -24,6 +24,36 @@ DEFAULT_HTTP_TIMEOUT_SECONDS = 40
 JSON_TIMEOUT_SECONDS = 30
 TEXT_TIMEOUT_SECONDS = DEFAULT_HTTP_TIMEOUT_SECONDS
 TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+# El mayor payload real (Greenhouse con content=true) ronda pocos MB; el
+# límite solo evita que una respuesta anómala agote la memoria del runner.
+MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+
+
+class ResponseTooLargeError(ValueError):
+    pass
+
+
+class IncompleteSnapshot(list):
+    """Jobs de un listado leído entero cuyo detalle falló para algunos IDs.
+
+    Se comporta como ``list[Job]``. ``failed_ids`` siguen publicados en la
+    fuente: cuentan como vistos y el runner no los cierra.
+    """
+
+    def __init__(self, jobs, *, failed_ids):
+        super().__init__(jobs)
+        self.failed_ids = frozenset(failed_ids)
+
+    def __eq__(self, other):
+        if not isinstance(other, IncompleteSnapshot):
+            return NotImplemented
+        return list.__eq__(self, other) and self.failed_ids == other.failed_ids
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
 
 
 def as_jobs(values):
@@ -167,13 +197,44 @@ def read_url(
 ):
     open_request = opener.open if opener is not None else urlopen
 
-    def read():
-        with open_request(request, timeout=timeout) as response:
-            return response.read()
-
     return request_with_retry(
-        read,
+        lambda: _read_bounded(open_request, request, timeout),
         context=context,
+    )
+
+
+def _read_bounded(open_request, request, timeout):
+    with open_request(request, timeout=timeout) as response:
+        body = response.read(MAX_RESPONSE_BYTES + 1)
+
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ResponseTooLargeError(
+            f"respuesta mayor de {MAX_RESPONSE_BYTES} bytes"
+        )
+
+    return body
+
+
+def _is_empty_json_body(error: Exception) -> bool:
+    return isinstance(error, json.JSONDecodeError) and not error.doc.strip()
+
+
+def read_json(
+    request,
+    *,
+    timeout: float,
+    context: str = "json",
+):
+    """Lee y decodifica JSON reintentando solo cuerpos vacíos.
+
+    Algunos ATS (Workday) devuelven ocasionalmente un 200 sin cuerpo; se
+    trata como transitorio igual que un 503. Un JSON malformado es un
+    cambio de contrato y falla sin reintentos.
+    """
+    return request_with_retry(
+        lambda: json.loads(_read_bounded(urlopen, request, timeout)),
+        context=context,
+        extra_transient_error=_is_empty_json_body,
     )
 
 
@@ -186,12 +247,11 @@ def fetch_json(url, *, context: str = "json"):
         },
     )
 
-    body = read_url(
+    return read_json(
         request,
         timeout=JSON_TIMEOUT_SECONDS,
         context=context,
     )
-    return json.loads(body)
 
 
 def fetch_text(url, *, context: str = "text"):

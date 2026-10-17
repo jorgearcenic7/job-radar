@@ -6,7 +6,7 @@ parámetros, orden y flags.
 ## Catálogo
 
 <!-- BEGIN GENERATED SOURCE CATALOG -->
-El registro actual contiene **70 fuentes**.
+El registro actual contiene **69 fuentes**.
 
 | Empresa | Tipo / `source` | Modo | `catch_all` |
 | --- | --- | --- | --- |
@@ -21,7 +21,6 @@ El registro actual contiene **70 fuentes**.
 | SoFi | `greenhouse` | required | no |
 | Coinbase | `greenhouse` | required | no |
 | Datadog | `greenhouse` | required | no |
-| Clarity AI | `greenhouse` | required | no |
 | Fever | `greenhouse` | required | no |
 | Cabify | `greenhouse` | required | no |
 | Aircall | `greenhouse` | required | no |
@@ -138,8 +137,16 @@ modelo y la semántica existentes al corregir una fuente.
 `job_radar/connectors/common.py` centraliza `urllib` para JSON y texto con User-Agent,
 timeouts y reintentos. Hace un máximo de tres intentos ante timeouts, fallos de
 conexión y HTTP 408/429/500/502/503/504. Un 400, 401, 403 o 404 se propaga sin
-reintento. Algunos portales requieren `curl_cffi`; su wrapper reutiliza la
-misma política para errores transitorios.
+reintento. Un 200 con cuerpo JSON vacío (visto en Workday) también se
+reintenta; un JSON malformado se propaga. Las respuestas mayores de
+`MAX_RESPONSE_BYTES` (50 MB) fallan para no agotar memoria. Algunos portales
+requieren `curl_cffi`; su wrapper reutiliza la misma política para errores
+transitorios.
+
+Si el listado se leyó completo pero falla el detalle de algunos IDs (error de
+red o página sin datos), no los descartes en silencio: devuelve
+`IncompleteSnapshot(jobs, failed_ids=...)` para que el runner no cierre esos
+IDs, y registra los IDs y tipos de error.
 
 No conviertas indisponibilidad en un snapshot vacío. Si un proveedor responde
 con una estructura incompatible, el conector debe fallar de forma visible para

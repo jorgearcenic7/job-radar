@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 from html import escape
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
+from job_radar.connectors.common import request_with_retry
 from job_radar.observability import SourceHealth
 from job_radar.storage import get_active_matches
 
@@ -77,47 +79,23 @@ def _build_health_alert(
     return html, [*text_items, ""]
 
 
-def build_match_email(
-    matches,
-    partial=False,
-    source_health: Iterable[SourceHealth] = (),
-):
-    count = len(matches)
-    match_label = "coincidencia" if count == 1 else "coincidencias"
-    active_label = "activa" if count == 1 else "activas"
-    date = datetime.now(timezone.utc).strftime("%d/%m/%Y")
-    qualifier = " · ejecución parcial" if partial else ""
-    subject = f"Job Radar · {count} {match_label} · {date}{qualifier}"
+def _render_match(index, job):
+    company = str(job.get("company") or "Empresa no indicada")
+    title = str(job.get("title") or "Puesto sin título")
+    status = str(job.get("match_status") or "Coincidencia")
+    location = str(job.get("location") or "Ubicación no indicada")
+    salary = str(job.get("salary_text") or "No publicado")
+    experience = str(job.get("experience_text") or "No publicada")
+    url = safe_https_url(job.get("url"))
 
-    summary = (
-        "La ingesta terminó con errores en una o más fuentes. "
-        "El listado contiene los datos que pudieron actualizarse."
-        if partial
-        else "La ingesta diaria ha terminado correctamente."
+    link = (
+        '<a href="{}" style="color:#047857;font-weight:600;">'
+        "Ver oferta</a>".format(escape(url, quote=True))
+        if url
+        else '<span style="color:#64748b;">Enlace no disponible</span>'
     )
-    health_alert_html, health_alert_text = _build_health_alert(source_health)
 
-    cards = []
-    text_items = []
-
-    for index, job in enumerate(matches, start=1):
-        company = str(job.get("company") or "Empresa no indicada")
-        title = str(job.get("title") or "Puesto sin título")
-        status = str(job.get("match_status") or "Coincidencia")
-        location = str(job.get("location") or "Ubicación no indicada")
-        salary = str(job.get("salary_text") or "No publicado")
-        experience = str(job.get("experience_text") or "No publicada")
-        url = safe_https_url(job.get("url"))
-
-        link = (
-            '<a href="{}" style="color:#047857;font-weight:600;">'
-            "Ver oferta</a>".format(escape(url, quote=True))
-            if url
-            else '<span style="color:#64748b;">Enlace no disponible</span>'
-        )
-
-        cards.append(
-            """
+    html = """
             <div style="border:1px solid #e2e8f0;border-radius:12px;
                         margin:0 0 14px;padding:18px;">
               <div style="color:#047857;font-size:12px;font-weight:700;
@@ -138,24 +116,102 @@ def build_match_email(
               {link}
             </div>
             """.format(
-                status=escape(status),
-                title=escape(title),
-                company=escape(company),
-                location=escape(location),
-                salary=escape(salary),
-                experience=escape(experience),
-                link=link,
-            )
-        )
+        status=escape(status),
+        title=escape(title),
+        company=escape(company),
+        location=escape(location),
+        salary=escape(salary),
+        experience=escape(experience),
+        link=link,
+    )
+    text = [
+        f"{index}. [{status}] {title} — {company}",
+        f"   Ubicación: {location}",
+        f"   Salario: {salary}",
+        f"   Experiencia: {experience}",
+        f"   {url or 'Enlace no disponible'}",
+        "",
+    ]
+    return html, text
 
-        text_items.extend([
-            f"{index}. [{status}] {title} — {company}",
-            f"   Ubicación: {location}",
-            f"   Salario: {salary}",
-            f"   Experiencia: {experience}",
-            f"   {url or 'Enlace no disponible'}",
-            "",
-        ])
+
+def _is_new(job, new_since: datetime | None) -> bool:
+    first_seen_at = job.get("first_seen_at")
+    return bool(
+        new_since is not None
+        and first_seen_at is not None
+        and first_seen_at >= new_since
+    )
+
+
+def _render_matches(jobs, start_index=1, heading=None):
+    html = []
+    text = []
+
+    if heading:
+        html.append(
+            '<h3 style="color:#0f172a;font-size:15px;margin:22px 0 12px;">'
+            f"{escape(heading)}</h3>"
+        )
+        text.extend([heading.upper(), ""])
+
+    for index, job in enumerate(jobs, start=start_index):
+        card_html, card_text = _render_match(index, job)
+        html.append(card_html)
+        text.extend(card_text)
+
+    return html, text
+
+
+def build_match_email(
+    matches,
+    partial=False,
+    source_health: Iterable[SourceHealth] = (),
+    new_since: datetime | None = None,
+):
+    count = len(matches)
+    match_label = "coincidencia" if count == 1 else "coincidencias"
+    active_label = "activa" if count == 1 else "activas"
+    date = datetime.now(timezone.utc).strftime("%d/%m/%Y")
+    new_matches = [job for job in matches if _is_new(job, new_since)]
+    other_matches = [job for job in matches if not _is_new(job, new_since)]
+    new_label = (
+        f" · {len(new_matches)} "
+        f"{'nueva' if len(new_matches) == 1 else 'nuevas'}"
+        if new_matches
+        else ""
+    )
+    qualifier = " · ejecución parcial" if partial else ""
+    subject = (
+        f"Job Radar · {count} {match_label}{new_label} · {date}{qualifier}"
+    )
+
+    summary = (
+        "La ingesta terminó con errores en una o más fuentes. "
+        "El listado contiene los datos que pudieron actualizarse."
+        if partial
+        else "La ingesta diaria ha terminado correctamente."
+    )
+    health_alert_html, health_alert_text = _build_health_alert(source_health)
+
+    if new_matches:
+        new_html, new_text = _render_matches(
+            new_matches,
+            heading=f"Nuevas en esta ejecución ({len(new_matches)})",
+        )
+        rest_html, rest_text = _render_matches(
+            other_matches,
+            start_index=len(new_matches) + 1,
+            heading=(
+                f"Resto de coincidencias activas ({len(other_matches)})"
+                if other_matches
+                else None
+            ),
+        )
+        cards = new_html + rest_html
+        text_items = new_text + rest_text
+    else:
+        cards, text_items = _render_matches(matches)
 
     if not cards:
         cards.append(
@@ -211,6 +267,7 @@ def build_match_email(
 def send_match_notification(
     partial=False,
     source_health: Iterable[SourceHealth] = (),
+    new_since: datetime | None = None,
 ):
     api_key = os.getenv("RESEND_API_KEY", "").strip()
 
@@ -228,6 +285,7 @@ def send_match_notification(
         matches,
         partial=partial,
         source_health=source_health,
+        new_since=new_since,
     )
 
     payload = json.dumps({
@@ -247,10 +305,9 @@ def send_match_notification(
         "User-Agent": "Job-Radar/1.0",
     }
 
-    run_id = os.getenv("NOTIFICATION_RUN_ID", "").strip()
-
-    if run_id:
-        headers["Idempotency-Key"] = f"job-radar/{run_id}"[:256]
+    # La clave hace seguros los reintentos: Resend no duplica el correo.
+    run_id = os.getenv("NOTIFICATION_RUN_ID", "").strip() or str(uuid4())
+    headers["Idempotency-Key"] = f"job-radar/{run_id}"[:256]
 
     request = Request(
         RESEND_EMAILS_URL,
@@ -259,8 +316,11 @@ def send_match_notification(
         method="POST",
     )
 
-    with urlopen(request, timeout=30) as response:
-        result = json.load(response)
+    def send():
+        with urlopen(request, timeout=30) as response:
+            return json.load(response)
+
+    result = request_with_retry(send, context="resend")
 
     email_id = result.get("id")
 

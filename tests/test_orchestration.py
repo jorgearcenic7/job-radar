@@ -2,6 +2,7 @@ import unittest
 from dataclasses import dataclass
 from unittest.mock import ANY, patch
 
+from job_radar.connectors import IncompleteSnapshot
 from job_radar.domain import Job, PreparedJob
 from job_radar.matching import classify
 from job_radar.orchestration import runner
@@ -158,6 +159,7 @@ class OrchestrationTests(unittest.TestCase):
             ANY,
             "Example",
             close_missing=True,
+            keep_ids=frozenset(),
         )
         send_match_notification.assert_called_once()
         notification = send_match_notification.call_args.kwargs
@@ -234,6 +236,7 @@ class OrchestrationTests(unittest.TestCase):
         send_match_notification.assert_called_once_with(
             partial=True,
             source_health=ANY,
+            new_since=ANY,
         )
 
     @patch("job_radar.orchestration.runner.send_match_notification")
@@ -257,6 +260,7 @@ class OrchestrationTests(unittest.TestCase):
         send_match_notification.assert_called_once_with(
             partial=False,
             source_health=ANY,
+            new_since=ANY,
         )
 
     @patch("job_radar.orchestration.runner.send_match_notification")
@@ -326,6 +330,7 @@ class OrchestrationTests(unittest.TestCase):
             ANY,
             "Example",
             close_missing=False,
+            keep_ids=frozenset(),
         )
         self.assertIn("snapshot_closure_suppressed", "\n".join(logs.output))
 
@@ -354,7 +359,40 @@ class OrchestrationTests(unittest.TestCase):
             [],
             "Example",
             close_missing=False,
+            keep_ids=frozenset(),
         )
+
+    @patch("job_radar.orchestration.runner.send_match_notification")
+    @patch("job_radar.orchestration.runner.save_jobs", return_value=(0, 0))
+    def test_incomplete_snapshot_keeps_failed_ids_open(
+        self,
+        save_jobs,
+        _send_match_notification,
+    ):
+        connector = StubConnector()
+        complete_fetch = connector.fetch
+        failed_ids = {"listed-1", "listed-2"}
+        connector.fetch = lambda: IncompleteSnapshot(
+            complete_fetch(),
+            failed_ids=failed_ids,
+        )
+        repository = RecordingRunRepository()
+
+        with patch.object(runner, "CONNECTORS", (connector,)):
+            with self.assertLogs(runner.LOGGER, level="WARNING") as logs:
+                exit_code = runner.run(repository)
+
+        self.assertEqual(exit_code, 0)
+        save_jobs.assert_called_once_with(
+            ANY,
+            "Example",
+            close_missing=True,
+            keep_ids=frozenset(failed_ids),
+        )
+        finish = repository.source_finishes[0]
+        self.assertEqual(finish["jobs_seen"], 3)
+        self.assertEqual(finish["snapshot_status"], "healthy")
+        self.assertIn("snapshot_incomplete", "\n".join(logs.output))
 
     @patch(
         "job_radar.orchestration.runner.send_match_notification",
