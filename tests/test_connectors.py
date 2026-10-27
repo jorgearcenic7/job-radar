@@ -896,6 +896,17 @@ class WorkdayTests(unittest.TestCase):
 
 
 class NewCompanyConfigurationTests(unittest.TestCase):
+    def test_each_company_has_a_single_connector(self):
+        # save_jobs cierra por empresa (no por fuente) para retirar las
+        # ofertas de un ATS anterior; con dos conectores para la misma
+        # empresa, cada uno cerraría las ofertas del otro.
+        companies = [connector.company for connector in registry.CONNECTORS]
+        duplicates = sorted(
+            {company for company in companies if companies.count(company) > 1}
+        )
+
+        self.assertEqual(duplicates, [])
+
     def test_product_software_and_fintech_sources_are_configured(self):
         greenhouse_companies = {
             "Make": "make",

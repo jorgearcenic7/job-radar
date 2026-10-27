@@ -1,5 +1,6 @@
 import logging
-from collections.abc import Collection
+from collections import Counter
+from collections.abc import Collection, Iterable
 from typing import Any
 
 from job_radar.domain import PreparedJob
@@ -156,6 +157,14 @@ def save_jobs(
         )
 
     (source,) = sources
+
+    # Los cierres (por empresa y de empresas retiradas) comparan con el
+    # nombre del registry: una oferta con otro nombre se cerraría sola.
+    if any(prepared.job.company != company for prepared in prepared_jobs):
+        raise ValueError(
+            f"{company}: el snapshot contiene ofertas de otra empresa"
+        )
+
     current_ids = {prepared.job.source_job_id for prepared in prepared_jobs}
     closed_count = 0
 
@@ -177,6 +186,10 @@ def save_jobs(
             [_job_row(prepared) for prepared in prepared_jobs],
         )
 
+        # El cierre abarca toda la empresa y no solo esta fuente: si la
+        # empresa cambió de ATS (Nubank pasó de Greenhouse a Ashby), sus
+        # ofertas de la fuente anterior ya no las verá ningún conector. Es
+        # seguro porque cada empresa tiene un único conector en el registry.
         if close_missing:
             cursor.execute(
                 """
@@ -184,9 +197,8 @@ def save_jobs(
                 SET active = FALSE,
                     closed_at = CURRENT_TIMESTAMP
                 WHERE company = %s
-                  AND source = %s
                   AND active = TRUE
-                  AND NOT (source_job_id = ANY(%s))
+                  AND NOT (source = %s AND source_job_id = ANY(%s))
                 """,
                 (
                     company,
@@ -197,3 +209,40 @@ def save_jobs(
             closed_count = cursor.rowcount
 
     return new_count, closed_count
+
+
+def close_retired_companies(configured_companies: Iterable[str]) -> int:
+    """Cierra las ofertas activas de empresas que ya no están en el registry.
+
+    Sin esto, las ofertas de una fuente retirada (Revolut) seguirían activas
+    para siempre, porque ningún conector vuelve a verlas ni a cerrarlas. Si la
+    empresa vuelve al registry, el siguiente upsert las reactiva.
+    """
+    companies = sorted(set(configured_companies))
+
+    # Un registry vacío cerraría todas las ofertas: nunca es una retirada.
+    if not companies:
+        raise ValueError("Registry sin empresas: no se cierra ninguna oferta")
+
+    with open_cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE jobs
+            SET active = FALSE,
+                closed_at = CURRENT_TIMESTAMP
+            WHERE active = TRUE
+              AND NOT (company = ANY(%s))
+            RETURNING company
+            """,
+            (companies,),
+        )
+        closed = Counter(row[0] for row in cursor.fetchall())
+
+    for company, count in sorted(closed.items()):
+        LOGGER.warning(
+            "retired_company_jobs_closed company=%r jobs_closed=%s",
+            company,
+            count,
+        )
+
+    return sum(closed.values())

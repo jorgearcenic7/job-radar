@@ -78,6 +78,15 @@ class RecordingRunRepository:
 
 
 class OrchestrationTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(
+            runner,
+            "close_retired_companies",
+            return_value=0,
+        )
+        self.close_retired_companies = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_each_job_is_classified_once_before_persistence(self):
         connector = StubConnector(jobs_count=3)
         metrics = runner.SourceMetrics()
@@ -279,6 +288,8 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(repository.ingestion_finish["status"], "failed")
         self.assertEqual(repository.source_finishes[0]["status"], "failed")
         send_match_notification.assert_not_called()
+        # Una ingesta abortada no retira empresas.
+        self.close_retired_companies.assert_not_called()
 
     @patch("job_radar.orchestration.runner.send_match_notification")
     def test_interruption_finalizes_run_before_propagating(
@@ -540,6 +551,70 @@ class OrchestrationTests(unittest.TestCase):
             with self.assertLogs(runner.LOGGER, level="INFO"):
                 with self.assertRaisesRegex(RuntimeError, "unexpected"):
                     runner.run(repository)
+
+
+
+class RetiredCompaniesTests(unittest.TestCase):
+    @patch("job_radar.orchestration.runner.send_match_notification")
+    @patch("job_radar.orchestration.runner.save_jobs", return_value=(1, 0))
+    def test_retires_companies_missing_from_registry_after_sources(
+        self,
+        save_jobs,
+        send_match_notification,
+    ):
+        repository = RecordingRunRepository()
+        connectors = (
+            StubConnector(company="Alpha"),
+            StubConnector(company="Beta", error=TimeoutError("down")),
+        )
+        calls = []
+        save_jobs.side_effect = lambda *args, **kwargs: (
+            calls.append("save_jobs") or (1, 0)
+        )
+
+        def close_retired(companies):
+            calls.append(("close_retired", sorted(companies)))
+            return 4
+
+        with patch.object(runner, "CONNECTORS", connectors):
+            with patch.object(
+                runner,
+                "close_retired_companies",
+                side_effect=close_retired,
+            ):
+                with self.assertLogs(runner.LOGGER, level="INFO"):
+                    exit_code = runner.run(repository)
+
+        # Una fuente configurada que falla sigue en el registry: no se retira.
+        self.assertEqual(
+            calls,
+            ["save_jobs", ("close_retired", ["Alpha", "Beta"])],
+        )
+        self.assertEqual(exit_code, 1)
+        send_match_notification.assert_called_once()
+
+    @patch("job_radar.orchestration.runner.send_match_notification")
+    @patch("job_radar.orchestration.runner.save_jobs", return_value=(1, 0))
+    def test_retirement_failure_fails_the_run(
+        self,
+        _save_jobs,
+        send_match_notification,
+    ):
+        repository = RecordingRunRepository()
+
+        with patch.object(runner, "CONNECTORS", (StubConnector(),)):
+            with patch.object(
+                runner,
+                "close_retired_companies",
+                side_effect=RuntimeError("database down"),
+            ):
+                with self.assertLogs(runner.LOGGER, level="INFO"):
+                    with self.assertRaisesRegex(RuntimeError, "database"):
+                        runner.run(repository)
+
+        self.assertEqual(repository.ingestion_finish["status"], "failed")
+        send_match_notification.assert_not_called()
+
 
 
 if __name__ == "__main__":

@@ -9,7 +9,11 @@ from job_radar.connectors import CONNECTORS, Connector, IncompleteSnapshot
 from job_radar.matching import prepare_job
 from job_radar.notifications import send_match_notification
 from job_radar.observability import HEALTH_WINDOW, build_source_health
-from job_radar.storage import RunRepository, save_jobs
+from job_radar.storage import (
+    RunRepository,
+    close_retired_companies,
+    save_jobs,
+)
 
 from .snapshots import SNAPSHOT_HISTORY_LIMIT, evaluate_snapshot
 
@@ -276,6 +280,10 @@ def run(run_repository: RunRepository | None = None) -> int:
                 run_metrics.sources_succeeded += 1
                 run_metrics.add(source_metrics)
                 finish_source_run()
+
+        close_retired_companies(
+            connector.company for connector in CONNECTORS
+        )
 
         notified = _notify_matches(
             repository,
