@@ -6,7 +6,7 @@ persistido en la tabla `jobs`.
 
 ## Stack
 
-- Next.js 16.3.8 con App Router y Turbopack por defecto.
+- Next.js 16.4.2 con App Router y Turbopack por defecto.
 - React y React DOM 19.3.0.
 - TypeScript 5.9.3 en modo estricto.
 - Tailwind CSS 4.3.3 mediante PostCSS.
@@ -19,9 +19,12 @@ Las versiones exactas resueltas están en `package-lock.json`.
 
 | Ruta | Responsabilidad |
 | --- | --- |
-| `src/app/page.tsx` | Server Component, consultas, filtros, paginación y UI. |
-| `src/app/layout.tsx` | Metadata, idioma y fuentes Geist. |
+| `src/app/page.tsx` | Server Component que compone el dashboard y redirige páginas fuera de rango. |
+| `src/app/layout.tsx` | Metadata, idioma y fuente Geist. |
 | `src/app/globals.css` | Estilos globales y componentes visuales. |
+| `src/components/` | Componentes de presentación: hero, métricas, filtros, ofertas y paginación. |
+| `src/lib/jobs.ts` | Consultas parametrizadas server-only del dashboard. |
+| `src/lib/job-search.ts` | Filtros, paginación y URLs a partir de `searchParams`. |
 | `src/lib/db.ts` | Pool PostgreSQL server-only y selección de credenciales. |
 | `src/proxy.ts` | CSP con nonce por petición. |
 | `next.config.ts` | Cabeceras HTTP defensivas. |

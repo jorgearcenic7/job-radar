@@ -1,349 +1,47 @@
-import { db } from "@/lib/db";
-import Link from "next/link";
 import { redirect } from "next/navigation";
+
+import { FilterForm } from "@/components/filter-form";
+import { Hero } from "@/components/hero";
+import { JobList } from "@/components/job-list";
+import { Pagination } from "@/components/pagination";
+import { StatsGrid } from "@/components/stats-grid";
+import {
+  PAGE_SIZE,
+  jobSearchHref,
+  parseFilters,
+  parsePage,
+} from "@/lib/job-search";
+import { getJobBoard } from "@/lib/jobs";
 
 export const dynamic = "force-dynamic";
 
-const MAX_FILTER_LENGTH = 120;
-const MAX_PAGE = 500;
-const PAGE_SIZE = 20;
-// Ofertas sin ver en este tiempo respecto a la última ingesta pertenecen a
-// fuentes que fallan: su enlace ya no está verificado. Mantener sincronizado
-// con STALE_AFTER_DAYS en job_radar/storage/postgres.py.
-const STALE_AFTER_DAYS = 7;
-// El cron corre cada 2 días; más de 3 sin datos indica un pipeline parado.
-const UPDATE_OVERDUE_HOURS = 72;
-const NEW_JOB_DAYS = 3;
-
-function boundedParam(value: string | string[] | undefined, fallback = "") {
-  return typeof value === "string"
-    ? value.trim().slice(0, MAX_FILTER_LENGTH)
-    : fallback;
-}
-
-function safeExternalUrl(value: string) {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" ? url.toString() : null;
-  } catch {
-    return null;
-  }
-}
-
-function JobLink({ url }: { url: string }) {
-  const safeUrl = safeExternalUrl(url);
-
-  if (!safeUrl) {
-    return (
-      <span className="job-link cursor-not-allowed opacity-50">
-        Enlace no disponible
-      </span>
-    );
-  }
-
-  return (
-    <a
-      href={safeUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="job-link"
-    >
-      Ver oferta
-      <span aria-hidden="true">↗</span>
-    </a>
-  );
-}
-
-type Job = {
-  source: string;
-  source_job_id: string;
-  company: string;
-  title: string;
-  location: string | null;
-  url: string;
-  salary_text: string | null;
-  experience_text: string | null;
-  selected: boolean;
-  match_status: string | null;
-  is_new: boolean;
-};
-
-function formatElapsed(seconds: number) {
-  const format = new Intl.RelativeTimeFormat("es", { numeric: "auto" });
-  const hours = Math.floor(seconds / 3600);
-
-  if (hours < 1) {
-    return format.format(-Math.max(1, Math.floor(seconds / 60)), "minute");
-  }
-
-  return hours < 48
-    ? format.format(-hours, "hour")
-    : format.format(-Math.floor(hours / 24), "day");
-}
-
-type Params = {
-  q?: string | string[];
-  company?: string | string[];
-  country?: string | string[];
-  selected?: string | string[];
-  page?: string | string[];
-};
-
-export default async function Home({
-  searchParams,
-}: {
-  searchParams: Promise<Params>;
-}) {
+export default async function Home({ searchParams }: PageProps<"/">) {
   const params = await searchParams;
-
-  const q = boundedParam(params.q);
-  const company = boundedParam(params.company);
-  const country = boundedParam(params.country, "Spain");
-
-  const selected = params.selected === "1";
-  const filterFormKey = JSON.stringify({ q, company, country, selected });
-
-  const requestedPage =
-    typeof params.page === "string"
-      ? Number.parseInt(params.page, 10)
-      : 1;
-
-  const page =
-    Number.isFinite(requestedPage) && requestedPage > 0
-      ? Math.min(requestedPage, MAX_PAGE)
-      : 1;
-
+  const filters = parseFilters(params);
+  const page = parsePage(params.page);
   const offset = (page - 1) * PAGE_SIZE;
 
-  const freshness = await db.query<{
-    cutoff: Date | null;
-    seconds_since_update: number | null;
-  }>(
-    `SELECT
-      MAX(last_seen_at) - make_interval(days => $1) AS cutoff,
-      EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - MAX(last_seen_at))::int
-        AS seconds_since_update
-    FROM jobs
-    WHERE active = true`,
-    [STALE_AFTER_DAYS]
-  );
-  const { cutoff, seconds_since_update: secondsSinceUpdate } =
-    freshness.rows[0];
-
-  const [summary, companies, countries, resultCount, results] =
-    await Promise.all([
-    db.query<{ total: number; selected: number }>(
-      `SELECT
-        COUNT(*)::int AS total,
-        COUNT(*) FILTER (WHERE selected)::int AS selected
-      FROM jobs
-      WHERE active = true
-        AND last_seen_at >= $1`,
-      [cutoff]
-    ),
-
-    db.query<{ company: string }>(
-      `SELECT DISTINCT company
-      FROM jobs
-      WHERE active = true
-        AND last_seen_at >= $1
-      ORDER BY company`,
-      [cutoff]
-    ),
-
-    db.query<{ country: string }>(
-      `SELECT DISTINCT country
-      FROM jobs
-      CROSS JOIN LATERAL
-        unnest(
-          COALESCE(
-            countries,
-            ARRAY[]::text[]
-          )
-        ) AS c(country)
-      WHERE active = true
-        AND last_seen_at >= $1
-        AND country <> ''
-      ORDER BY country`,
-      [cutoff]
-    ),
-
-    db.query<{ total: number }>(
-      `SELECT COUNT(*)::int AS total
-      FROM jobs
-      WHERE active = true
-        AND last_seen_at >= $5
-        AND ($1 = '' OR strpos(lower(title), lower($1)) > 0)
-        AND ($2 = '' OR company = $2)
-        AND (
-          $3 = ''
-          OR $3 = ANY(
-            COALESCE(
-              countries,
-              ARRAY[]::text[]
-            )
-          )
-        )
-        AND ($4::boolean = false OR selected = true)`,
-      [q, company, country, selected, cutoff]
-    ),
-
-    db.query<Job>(
-      `SELECT
-        source,
-        source_job_id,
-        company,
-        title,
-        location,
-        url,
-        salary_text,
-        experience_text,
-        selected,
-        match_status,
-        first_seen_at >= CURRENT_TIMESTAMP - make_interval(days => $8)
-          AS is_new
-      FROM jobs
-      WHERE active = true
-        AND last_seen_at >= $7
-        AND ($1 = '' OR strpos(lower(title), lower($1)) > 0)
-        AND ($2 = '' OR company = $2)
-        AND (
-          $3 = ''
-          OR $3 = ANY(
-            COALESCE(
-              countries,
-              ARRAY[]::text[]
-            )
-          )
-        )
-        AND ($4::boolean = false OR selected = true)
-      ORDER BY selected DESC, company, title, source_job_id
-      LIMIT $5
-      OFFSET $6`,
-      [
-        q,
-        company,
-        country,
-        selected,
-        PAGE_SIZE,
-        offset,
-        cutoff,
-        NEW_JOB_DAYS,
-      ]
-    ),
-  ]);
-
-  const stats = summary.rows[0];
-  const totalResults = resultCount.rows[0].total;
+  const board = await getJobBoard(filters, offset);
+  const { totalResults, jobs } = board;
   const totalPages = Math.max(1, Math.ceil(totalResults / PAGE_SIZE));
-  const firstResult = totalResults === 0 ? 0 : offset + 1;
-  const lastResult = Math.min(offset + results.rows.length, totalResults);
-
-  const pageHref = (targetPage: number) => {
-    const query = new URLSearchParams();
-
-    if (q) query.set("q", q);
-    if (company) query.set("company", company);
-    query.set("country", country);
-    if (selected) query.set("selected", "1");
-    if (targetPage > 1) query.set("page", String(targetPage));
-
-    const queryString = query.toString();
-    return queryString ? `/?${queryString}` : "/";
-  };
 
   if (page > totalPages) {
-    redirect(pageHref(totalPages));
+    redirect(jobSearchHref(filters, totalPages));
   }
 
-  const updateOverdue =
-    secondsSinceUpdate === null ||
-    secondsSinceUpdate > UPDATE_OVERDUE_HOURS * 3600;
-
-  const matchRate =
-    stats.total > 0
-      ? Math.round((stats.selected / stats.total) * 100)
-      : 0;
+  const firstResult = offset + 1;
+  const lastResult = Math.min(offset + jobs.length, totalResults);
 
   return (
     <main className="min-h-screen">
-      <section className="hero">
-        <div className="mx-auto max-w-6xl px-5 pb-14 pt-8 sm:px-8 sm:pt-10">
-          <nav className="mb-16 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="radar-logo">
-                <span />
-              </div>
-
-              <span className="text-sm font-semibold tracking-tight text-white">
-                Job Radar
-              </span>
-            </div>
-
-            <div
-              className={`flex items-center gap-2 text-xs font-medium ${
-                updateOverdue ? "text-amber-300" : "text-slate-400"
-              }`}
-            >
-              <span
-                className={`status-dot ${updateOverdue ? "status-dot-stale" : ""}`}
-              />
-              {secondsSinceUpdate === null
-                ? "Sin datos de actualización"
-                : `Actualizado ${formatElapsed(secondsSinceUpdate)}`}
-            </div>
-          </nav>
-
-          <div className="max-w-3xl">
-            <p className="mb-4 text-xs font-semibold uppercase tracking-[0.22em] text-emerald-400">
-              Oportunidades seleccionadas
-            </p>
-
-            <h1 className="max-w-2xl text-4xl font-semibold leading-[1.08] tracking-[-0.04em] text-white sm:text-5xl">
-              Encuentra la oportunidad
-              <span className="text-slate-400">
-                {" "}que merece tu atención.
-              </span>
-            </h1>
-
-            <p className="mt-5 max-w-xl text-sm leading-6 text-slate-400 sm:text-base">
-              Job Radar reúne y filtra automáticamente oportunidades de
-              ingeniería de datos en empresas de producto, software y
-              FinTechs.
-            </p>
-          </div>
-        </div>
-      </section>
+      <Hero secondsSinceUpdate={board.secondsSinceUpdate} />
 
       <div className="mx-auto max-w-6xl px-5 pb-16 sm:px-8">
-        <section className="stats-grid">
-          <div className="stat-card">
-            <div>
-              <p className="stat-label">Ofertas monitorizadas</p>
-              <p className="stat-value">{stats.total}</p>
-            </div>
-
-            <div className="stat-icon">01</div>
-          </div>
-
-          <div className="stat-card stat-card-highlight">
-            <div>
-              <p className="stat-label">Coincidencias</p>
-              <p className="stat-value">{stats.selected}</p>
-            </div>
-
-            <div className="match-rate">{matchRate}%</div>
-          </div>
-
-          <div className="stat-card">
-            <div>
-              <p className="stat-label">Empresas activas</p>
-              <p className="stat-value">{companies.rows.length}</p>
-            </div>
-
-            <div className="stat-icon">03</div>
-          </div>
-        </section>
+        <StatsGrid
+          totalJobs={board.totalJobs}
+          selectedJobs={board.selectedJobs}
+          companyCount={board.companies.length}
+        />
 
         <section className="mt-12">
           <div className="mb-5 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
@@ -359,84 +57,11 @@ export default async function Home({
             </p>
           </div>
 
-          <form key={filterFormKey} className="filter-panel">
-            <div className="search-field">
-              <svg
-                aria-hidden="true"
-                viewBox="0 0 24 24"
-                className="h-5 w-5 shrink-0"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-              >
-                <circle cx="11" cy="11" r="7" />
-                <path d="m20 20-3.5-3.5" />
-              </svg>
-
-              <input
-                name="q"
-                defaultValue={q}
-                placeholder="Buscar por puesto..."
-                aria-label="Buscar por título"
-              />
-            </div>
-
-            <select
-              name="company"
-              defaultValue={company}
-              aria-label="Filtrar por empresa"
-              className="company-select"
-            >
-              <option value="">Todas las empresas</option>
-
-              {companies.rows.map((item) => (
-                <option key={item.company} value={item.company}>
-                  {item.company}
-                </option>
-              ))}
-            </select>
-
-            <select
-              name="country"
-              defaultValue={country}
-              aria-label="Filtrar por país"
-              className="company-select"
-            >
-              <option value="">
-                Todos los países
-              </option>
-
-              {countries.rows.map((item) => (
-                <option
-                  key={item.country}
-                  value={item.country}
-                >
-                  {item.country}
-                </option>
-              ))}
-            </select>
-
-            <label className="match-toggle">
-              <input
-                type="checkbox"
-                name="selected"
-                value="1"
-                defaultChecked={selected}
-              />
-
-              <span>Solo coincidencias</span>
-            </label>
-
-            <button className="primary-button">
-              Aplicar filtros
-            </button>
-
-            {(q || company || country !== "Spain" || selected) && (
-              <Link href="/" className="clear-link">
-                Limpiar
-              </Link>
-            )}
-          </form>
+          <FilterForm
+            filters={filters}
+            companies={board.companies}
+            countries={board.countries}
+          />
 
           <div className="mt-5 flex items-center gap-2 text-xs text-slate-500">
             <span className="info-dot" />
@@ -445,144 +70,12 @@ export default async function Home({
         </section>
 
         <section className="mt-7">
-          {results.rows.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-icon">
-                <svg
-                  viewBox="0 0 24 24"
-                  className="h-6 w-6"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                >
-                  <circle cx="11" cy="11" r="7" />
-                  <path d="m20 20-3.5-3.5" />
-                </svg>
-              </div>
-
-              <h3>Sin resultados</h3>
-
-              <p>
-                Prueba con otra búsqueda o elimina alguno de los filtros.
-              </p>
-            </div>
-          ) : (
-            <div className="job-list">
-              {results.rows.map((job) => (
-                <article
-                  key={`${job.source}:${job.source_job_id}`}
-                  className={`job-card ${
-                    job.selected ? "job-card-selected" : ""
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="mb-3 flex flex-wrap items-center gap-2">
-                      <span className="company-name">
-                        {job.company}
-                      </span>
-
-                      {job.selected && (
-                        <span
-                          className={`match-badge ${
-                            job.match_status === "Stretch"
-                              ? "match-badge-stretch"
-                              : ""
-                          }`}
-                        >
-                          <span />
-                          {job.match_status ?? "Coincidencia"}
-                        </span>
-                      )}
-
-                      {job.is_new && <span className="new-badge">Nueva</span>}
-                    </div>
-
-                    <h3 className="job-title">
-                      {job.title}
-                    </h3>
-
-                    <div className="job-meta">
-                      <svg
-                        aria-hidden="true"
-                        viewBox="0 0 24 24"
-                        className="h-4 w-4 shrink-0"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.7"
-                      >
-                        <path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z" />
-                        <circle cx="12" cy="10" r="2.5" />
-                      </svg>
-
-                      <span>
-                        {job.location || "Ubicación no indicada"}
-                      </span>
-                    </div>
-
-                    {(job.salary_text || job.experience_text) && (
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {job.salary_text && (
-                          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-800">
-                            {job.salary_text}
-                          </span>
-                        )}
-
-                        {job.experience_text && (
-                          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-                            {job.experience_text}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <JobLink url={job.url} />
-                </article>
-              ))}
-            </div>
-          )}
-
-          {totalPages > 1 && (
-            <nav
-              className="mt-8 flex items-center justify-center gap-4"
-              aria-label="Paginación de ofertas"
-            >
-              {page > 1 ? (
-                <Link
-                  href={pageHref(page - 1)}
-                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:text-slate-950"
-                >
-                  ← Anterior
-                </Link>
-              ) : (
-                <span className="cursor-not-allowed rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-300">
-                  ← Anterior
-                </span>
-              )}
-
-              <span className="text-sm text-slate-500">
-                Página {page} de {totalPages}
-              </span>
-
-              {page < totalPages ? (
-                <Link
-                  href={pageHref(page + 1)}
-                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:text-slate-950"
-                >
-                  Siguiente →
-                </Link>
-              ) : (
-                <span className="cursor-not-allowed rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-300">
-                  Siguiente →
-                </span>
-              )}
-            </nav>
-          )}
+          <JobList jobs={jobs} />
+          <Pagination filters={filters} page={page} totalPages={totalPages} />
         </section>
 
         <footer className="mt-14 flex flex-col justify-between gap-2 border-t border-slate-200 pt-6 text-xs text-slate-500 sm:flex-row">
           <p>Job Radar · Personal Data Engineering Job Monitor</p>
-
           <p>{PAGE_SIZE} ofertas por página</p>
         </footer>
       </div>
