@@ -94,6 +94,9 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
     )
     args = parser.parse_args(argv)
 
+    # parser.error() no retorna, pero CodeQL no lo sabe: sin esta
+    # inicialización marca "changes" como posiblemente no inicializada.
+    changes: list[Path] = []
     try:
         changes = update_documents(root, check=args.check)
     except (OSError, ValueError) as error:
