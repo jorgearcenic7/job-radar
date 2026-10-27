@@ -25,6 +25,8 @@ Las versiones exactas resueltas están en `package-lock.json`.
 | `src/components/` | Componentes de presentación: hero, métricas, filtros, ofertas y paginación. |
 | `src/lib/jobs.ts` | Consultas parametrizadas server-only del dashboard. |
 | `src/lib/job-search.ts` | Filtros, paginación y URLs a partir de `searchParams`. |
+| `src/lib/urls.ts` | Validación HTTPS de los enlaces externos de las ofertas. |
+| `src/lib/*.test.ts` | Tests unitarios con `node:test`, sin dependencias (`npm test`). |
 | `src/lib/db.ts` | Pool PostgreSQL server-only y selección de credenciales. |
 | `src/proxy.ts` | CSP con nonce por petición. |
 | `next.config.ts` | Cabeceras HTTP defensivas. |
@@ -96,6 +98,7 @@ npm ci
 npm audit --omit=dev --audit-level=high
 npm audit --audit-level=high || true
 npm run lint
+npm test
 npm run build
 ```
 

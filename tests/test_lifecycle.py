@@ -16,7 +16,11 @@ from job_radar.matching import (
     prepare_job,
 )
 from job_radar.notifications import build_match_email
-from job_radar.storage import get_active_matches, save_jobs
+from job_radar.storage import (
+    close_retired_companies,
+    get_active_matches,
+    save_jobs,
+)
 from job_radar.storage.postgres import STALE_AFTER_DAYS
 from job_radar.storage.migrations import apply_pending
 
@@ -24,7 +28,9 @@ from job_radar.storage.migrations import apply_pending
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 POSTGRES_LOGGER = "job_radar.storage.postgres"
 COMPANY = "Lifecycle Test Company"
+RETIRED_COMPANY = "Lifecycle Retired Company"
 SOURCE = "test:connector"
+PREVIOUS_SOURCE = "test:previous-ats"
 
 
 def prepare_jobs(*jobs):
@@ -60,15 +66,23 @@ class LifecycleTests(unittest.TestCase):
         with psycopg.connect(TEST_DATABASE_URL) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "DELETE FROM jobs WHERE company = %s",
-                    (COMPANY,),
+                    "DELETE FROM jobs WHERE company = ANY(%s)",
+                    ([COMPANY, RETIRED_COMPANY],),
                 )
 
-    def make_job(self, job_id, title, location=None):
+    def make_job(
+        self,
+        job_id,
+        title,
+        location=None,
+        *,
+        source=SOURCE,
+        company=COMPANY,
+    ):
         return Job(
-            source=SOURCE,
+            source=source,
             source_job_id=job_id,
-            company=COMPANY,
+            company=company,
             title=title,
             location=location,
             url=f"https://example.com/jobs/{job_id}",
@@ -77,7 +91,7 @@ class LifecycleTests(unittest.TestCase):
             experience_text="2 years of experience",
         )
 
-    def job_state(self, job_id):
+    def job_state(self, job_id, source=SOURCE):
         with psycopg.connect(TEST_DATABASE_URL) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -87,9 +101,23 @@ class LifecycleTests(unittest.TestCase):
                     WHERE source = %s
                       AND source_job_id = %s
                     """,
-                    (SOURCE, job_id),
+                    (source, job_id),
                 )
                 return cursor.fetchone()
+
+    def other_active_companies(self):
+        with psycopg.connect(TEST_DATABASE_URL) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT company
+                    FROM jobs
+                    WHERE active
+                      AND company <> %s
+                    """,
+                    (RETIRED_COMPANY,),
+                )
+                return [row[0] for row in cursor.fetchall()]
 
     def job_timestamps(self, job_id):
         with psycopg.connect(TEST_DATABASE_URL) as connection:
@@ -256,6 +284,65 @@ class LifecycleTests(unittest.TestCase):
         active, closed_at = self.job_state("job-1")
         self.assertTrue(active)
         self.assertIsNone(closed_at)
+
+    def test_source_change_closes_jobs_of_previous_source(self):
+        # Caso Nubank: la empresa pasa de un ATS a otro.
+        old = self.make_job("job-old", "Data Engineer", source=PREVIOUS_SOURCE)
+        save_jobs(prepare_jobs(old), COMPANY)
+
+        new_count, closed_count = save_jobs(
+            prepare_jobs(self.make_job("job-new", "Data Engineer")),
+            COMPANY,
+        )
+
+        self.assertEqual((new_count, closed_count), (1, 1))
+        self.assertFalse(self.job_state("job-old", PREVIOUS_SOURCE)[0])
+        self.assertTrue(self.job_state("job-new")[0])
+
+    def test_suppressed_closures_keep_jobs_of_previous_source(self):
+        old = self.make_job("job-old", "Data Engineer", source=PREVIOUS_SOURCE)
+        save_jobs(prepare_jobs(old), COMPANY)
+
+        result = save_jobs(
+            prepare_jobs(self.make_job("job-new", "Data Engineer")),
+            COMPANY,
+            close_missing=False,
+        )
+
+        self.assertEqual(result, (1, 0))
+        self.assertTrue(self.job_state("job-old", PREVIOUS_SOURCE)[0])
+
+    def test_retired_company_is_closed_and_reactivates_if_it_returns(self):
+        retired = self.make_job(
+            "job-retired",
+            "Data Engineer",
+            company=RETIRED_COMPANY,
+        )
+        kept = self.make_job("job-kept", "Data Engineer")
+        save_jobs(prepare_jobs(retired), RETIRED_COMPANY)
+        save_jobs(prepare_jobs(kept), COMPANY)
+
+        # Se configuran todas las empresas activas salvo la retirada para no
+        # cerrar datos de otros tests que compartan la base.
+        configured = self.other_active_companies()
+        self.assertIn(COMPANY, configured)
+
+        with self.assertLogs(POSTGRES_LOGGER, "WARNING") as logs:
+            closed = close_retired_companies(configured)
+
+        self.assertEqual(closed, 1)
+        self.assertIn(
+            f"retired_company_jobs_closed company={RETIRED_COMPANY!r} "
+            "jobs_closed=1",
+            logs.output[0],
+        )
+        active, closed_at = self.job_state("job-retired")
+        self.assertFalse(active)
+        self.assertIsNotNone(closed_at)
+        self.assertTrue(self.job_state("job-kept")[0])
+
+        save_jobs(prepare_jobs(retired), RETIRED_COMPANY)
+        self.assertEqual(self.job_state("job-retired"), (True, None))
 
     def test_matching_metadata_is_persisted_and_refreshed(self):
         job = self.make_job(
@@ -432,6 +519,15 @@ class LifecycleWithoutDatabaseTests(unittest.TestCase):
 
         connect.assert_not_called()
 
+    def test_snapshot_with_another_company_is_rejected(self):
+        jobs = prepare_jobs(self.make_job("job-1"))
+
+        with patch("psycopg.connect") as connect:
+            with self.assertRaisesRegex(ValueError, "otra empresa"):
+                save_jobs(jobs, "Renamed Company")
+
+        connect.assert_not_called()
+
     def test_upsert_counts_new_ids_and_closes_missing_except_kept(self):
         cursor = FakeCursor(
             ([("job-1",), ("job-old",)], 2),
@@ -465,6 +561,12 @@ class LifecycleWithoutDatabaseTests(unittest.TestCase):
             [(SOURCE, "job-1"), (SOURCE, "job-2")],
         )
         self.assertTrue(close[0].startswith("UPDATE jobs SET active = FALSE"))
+        # El cierre abarca la empresa entera, no solo la fuente actual.
+        self.assertIn(
+            "WHERE company = %s AND active = TRUE "
+            "AND NOT (source = %s AND source_job_id = ANY(%s))",
+            close[0],
+        )
         self.assertEqual(close[1][:2], (COMPANY, SOURCE))
         self.assertEqual(
             sorted(close[1][2]),
@@ -545,6 +647,51 @@ class LifecycleWithoutDatabaseTests(unittest.TestCase):
                 f"count=2 stale_after_days={STALE_AFTER_DAYS}",
             ],
         )
+
+    def test_retire_with_empty_registry_never_connects(self):
+        with patch("psycopg.connect") as connect:
+            for configured in ([], (), iter(())):
+                with self.assertRaisesRegex(ValueError, "Registry sin"):
+                    close_retired_companies(configured)
+
+        connect.assert_not_called()
+
+    def test_retire_closes_unconfigured_companies_and_logs_each(self):
+        cursor = FakeCursor(
+            ([("Revolut",), ("Old Co",), ("Revolut",)], 3),
+        )
+
+        with patch("psycopg.connect", return_value=cursor):
+            with self.assertLogs(POSTGRES_LOGGER, "WARNING") as logs:
+                closed = close_retired_companies(
+                    ["Stripe", "Adyen", "Stripe"],
+                )
+
+        self.assertEqual(closed, 3)
+        statement, parameters = cursor.statements[0]
+        self.assertEqual(
+            statement,
+            "UPDATE jobs SET active = FALSE, closed_at = CURRENT_TIMESTAMP "
+            "WHERE active = TRUE AND NOT (company = ANY(%s)) "
+            "RETURNING company",
+        )
+        self.assertEqual(parameters, (["Adyen", "Stripe"],))
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:job_radar.storage.postgres:" +
+                "retired_company_jobs_closed company='Old Co' jobs_closed=1",
+                "WARNING:job_radar.storage.postgres:" +
+                "retired_company_jobs_closed company='Revolut' jobs_closed=2",
+            ],
+        )
+
+    def test_retire_without_matches_logs_nothing(self):
+        cursor = FakeCursor(([], 0))
+
+        with patch("psycopg.connect", return_value=cursor):
+            with self.assertNoLogs(POSTGRES_LOGGER, "WARNING"):
+                self.assertEqual(close_retired_companies(["Stripe"]), 0)
 
 
 if __name__ == "__main__":

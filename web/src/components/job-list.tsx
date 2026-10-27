@@ -1,14 +1,6 @@
 import { LocationIcon, SearchIcon } from "@/components/icons";
 import type { Job } from "@/lib/jobs";
-
-function safeExternalUrl(value: string): string | null {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" ? url.toString() : null;
-  } catch {
-    return null;
-  }
-}
+import { safeExternalUrl } from "@/lib/urls";
 
 function JobLink({ url }: { url: string }) {
   const safeUrl = safeExternalUrl(url);

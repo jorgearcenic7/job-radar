@@ -5,7 +5,7 @@ from .feedback import (
     FeedbackRepository,
     MissingMatchMetadataError,
 )
-from .postgres import get_active_matches, save_jobs
+from .postgres import close_retired_companies, get_active_matches, save_jobs
 from .runs import RunRepository, SourceRunRecord, SourceSnapshot
 
 __all__ = [
@@ -17,6 +17,7 @@ __all__ = [
     "RunRepository",
     "SourceRunRecord",
     "SourceSnapshot",
+    "close_retired_companies",
     "get_active_matches",
     "save_jobs",
 ]

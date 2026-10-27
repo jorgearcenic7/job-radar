@@ -133,11 +133,18 @@ jobs:
       - name: Audit production npm dependencies
         run: npm audit --omit=dev --audit-level=high
 
+      # Las dependencias de desarrollo no llegan a producción: no bloquea,
+      # pero deja un aviso visible en el PR en lugar de pasar en silencio.
       - name: Report full npm audit
-        run: npm audit --audit-level=high || true
+        run: |
+          npm audit --audit-level=high \
+            || echo "::warning title=npm audit::Vulnerabilidades altas en dependencias de desarrollo; revisa npm audit"
 
       - name: Lint web application
         run: npm run lint
+
+      - name: Run web unit tests
+        run: npm test
 
       - name: Build web application
         run: npm run build

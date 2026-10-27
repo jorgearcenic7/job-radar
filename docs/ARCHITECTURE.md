@@ -128,7 +128,16 @@ aportar un campo publicado por el ATS y usar los extractores como fallback.
 - `match_rules_version` y `match_reason_codes` identifican las reglas y motivos
   estables de la última clasificación; permanecen `NULL` en históricos hasta
   que se vuelven a procesar y en ofertas que `classify()` rechaza.
-- Ausencia en un snapshot sano: marca `active = FALSE` y fija `closed_at`.
+- Ausencia en un snapshot sano: marca `active = FALSE` y fija `closed_at`. El
+  cierre abarca todas las fuentes de la empresa, no solo la actual: si una
+  empresa cambia de ATS, sus ofertas de la fuente anterior se cierran con el
+  primer snapshot sano de la nueva. Requiere un único conector por empresa,
+  invariante cubierto por tests.
+- Empresa retirada del registry: al terminar los conectores,
+  `close_retired_companies()` cierra sus ofertas activas y deja un log
+  `retired_company_jobs_closed` por empresa. Una fuente configurada que falla
+  no se retira. Un registry vacío nunca cierra nada. Si la empresa vuelve, el
+  upsert reactiva sus ofertas.
 - Snapshot vacío: `save_jobs()` devuelve sin cerrar nada como segunda defensa,
   además de la protección del orquestador.
 

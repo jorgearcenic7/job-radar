@@ -175,6 +175,17 @@ modelo y la semántica existentes al corregir una fuente.
 8. **Ejecuta la suite completa.** Verifica también el incremento exacto de
    `CONNECTORS` cuando se añaden fuentes.
 
+## Retirar o mover una fuente
+
+- **Retirar una empresa:** basta con quitarla de `registry.py`. En la siguiente
+  ingesta sus ofertas activas se cierran (`retired_company_jobs_closed`).
+  Regenera el catálogo y ajusta los tests de recuento.
+- **Cambiar de ATS:** sustituye la entrada manteniendo exactamente el mismo
+  nombre de empresa. El primer snapshot sano de la nueva fuente cierra las
+  ofertas de la anterior; uno vacío o sospechoso no cierra nada.
+- **No registres dos conectores con el mismo nombre de empresa:** el cierre es
+  por empresa y cada uno cerraría las ofertas del otro. Un test lo impide.
+
 ## HTTP y errores
 
 `job_radar/connectors/common.py` centraliza `urllib` para JSON y texto con User-Agent,
