@@ -34,6 +34,17 @@ def _counts_are_similar(first: int, second: int) -> bool:
     return abs(first - second) <= tolerance
 
 
+def _continues_accepted_level(
+    jobs_seen: int,
+    history: Sequence[SourceSnapshot],
+) -> bool:
+    return bool(
+        history
+        and history[0].snapshot_status == "healthy"
+        and _counts_are_similar(history[0].jobs_seen, jobs_seen)
+    )
+
+
 def _is_stable_reduced_snapshot(
     jobs_seen: int,
     history: Sequence[SourceSnapshot],
@@ -95,11 +106,12 @@ def evaluate_snapshot(
             current_ratio=current_ratio,
         )
 
-    if (
-        history
-        and history[0].snapshot_status == "healthy"
-        and _counts_are_similar(history[0].jobs_seen, jobs_seen)
-    ) or _is_stable_reduced_snapshot(jobs_seen, history):
+    stabilized = (
+        _continues_accepted_level(jobs_seen, history)
+        or _is_stable_reduced_snapshot(jobs_seen, history)
+    )
+
+    if stabilized:
         return SnapshotAssessment(
             status="healthy",
             closure_suppressed=False,

@@ -1,12 +1,14 @@
 import os
 import unittest
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 try:
     import psycopg
 except ModuleNotFoundError:
     psycopg = None
 
-from job_radar.storage import RunRepository
+from job_radar.storage import RunRepository, SourceRunRecord, SourceSnapshot
 from job_radar.storage.migrations import apply_pending
 
 
@@ -207,6 +209,7 @@ class RunRepositoryTests(unittest.TestCase):
                 jobs_closed=0,
                 matches=0,
                 duration_ms=10,
+                snapshot_status="unknown" if failed else "empty",
                 error_type="TimeoutError" if failed else None,
                 error_message="upstream timeout" if failed else None,
             )
@@ -221,6 +224,140 @@ class RunRepositoryTests(unittest.TestCase):
         self.assertEqual(history[0].error_type, "TimeoutError")
         self.assertEqual(history[0].error_message, "upstream timeout")
         self.assertIsNotNone(history[0].finished_at)
+        self.assertEqual(
+            [run.snapshot_status for run in history],
+            ["unknown", "empty"],
+        )
+
+
+
+def fake_connection(rows=(), rowcount=1):
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.fetchall.return_value = list(rows)
+    cursor.rowcount = rowcount
+    connection = MagicMock()
+    connection.__enter__.return_value = connection
+    connection.cursor.return_value = cursor
+    return connection, cursor
+
+
+@unittest.skipIf(psycopg is None, "psycopg no instalado")
+class RunRepositoryWithoutDatabaseTests(unittest.TestCase):
+    def setUp(self):
+        self.repository = RunRepository("postgresql://runs")
+
+    def test_database_url_defaults_to_environment(self):
+        with patch.dict(os.environ, {"DATABASE_URL": "postgresql://env"}):
+            self.assertEqual(
+                RunRepository().database_url,
+                "postgresql://env",
+            )
+            self.assertEqual(RunRepository("").database_url, "")
+
+    def test_non_positive_limits_do_not_query(self):
+        with patch("psycopg.connect") as connect:
+            self.assertEqual(
+                self.repository.get_source_snapshot_history(
+                    company="Example",
+                    source="test",
+                    limit=0,
+                ),
+                [],
+            )
+            self.assertEqual(
+                self.repository.get_recent_source_runs(limit=0),
+                {},
+            )
+
+        connect.assert_not_called()
+
+    def test_finishing_unknown_runs_fails(self):
+        connection, _cursor = fake_connection(rowcount=0)
+        metrics = {
+            "jobs_seen": 0,
+            "jobs_new": 0,
+            "jobs_closed": 0,
+            "matches": 0,
+        }
+
+        with patch("psycopg.connect", return_value=connection) as connect:
+            with self.assertRaisesRegex(ValueError, "^ingestion_run .*: 1$"):
+                self.repository.finish_ingestion_run(
+                    1,
+                    status="success",
+                    sources_succeeded=0,
+                    sources_failed=0,
+                    **metrics,
+                )
+            with self.assertRaisesRegex(ValueError, "^source_run .*: 2$"):
+                self.repository.finish_source_run(
+                    2,
+                    status="success",
+                    duration_ms=0,
+                    **metrics,
+                )
+
+        connect.assert_called_with("postgresql://runs", connect_timeout=10)
+
+    def test_finish_source_run_defaults_and_parameter_order(self):
+        connection, cursor = fake_connection()
+
+        with patch("psycopg.connect", return_value=connection):
+            self.repository.finish_source_run(
+                9,
+                status="success",
+                jobs_seen=1,
+                jobs_new=2,
+                jobs_closed=3,
+                matches=4,
+                duration_ms=5,
+            )
+
+        self.assertEqual(
+            cursor.execute.call_args.args[1],
+            ("success", 1, 2, 3, 4, 5, "unknown", False, None, None, 9),
+        )
+
+    def test_snapshot_history_maps_rows(self):
+        connection, cursor = fake_connection([(10, "healthy", False)])
+
+        with patch("psycopg.connect", return_value=connection):
+            history = self.repository.get_source_snapshot_history(
+                company="Example",
+                source="test",
+                limit=3,
+            )
+
+        self.assertEqual(history, [SourceSnapshot(10, "healthy", False)])
+        self.assertEqual(
+            cursor.execute.call_args.args[1],
+            ("Example", "test", 3),
+        )
+
+    def test_recent_source_runs_are_grouped_per_source_in_row_order(self):
+        finished_at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        rows = [
+            ("A", "s", "failed", finished_at, "E", "m", "unknown"),
+            ("A", "s", "success", finished_at, None, None, "empty"),
+            ("B", "s", "success", finished_at, None, None, None),
+        ]
+        connection, cursor = fake_connection(rows)
+
+        with patch("psycopg.connect", return_value=connection):
+            histories = self.repository.get_recent_source_runs(limit=4)
+
+        self.assertEqual(cursor.execute.call_args.args[1], (4,))
+        self.assertEqual(
+            histories,
+            {
+                ("A", "s"): (
+                    SourceRunRecord(*rows[0]),
+                    SourceRunRecord(*rows[1]),
+                ),
+                ("B", "s"): (SourceRunRecord(*rows[2]),),
+            },
+        )
 
 
 if __name__ == "__main__":

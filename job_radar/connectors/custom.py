@@ -1,69 +1,173 @@
 import json
 import logging
 import re
-import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import unescape
 from html.parser import HTMLParser
-from http.client import HTTPException
 from http.cookiejar import CookieJar
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from job_radar.domain import Job
-from job_radar.matching import extract_experience, extract_salary
 
-from .common import as_jobs as _as_jobs
 from .common import (
+    BROWSER_USER_AGENT,
     DEFAULT_HTTP_TIMEOUT_SECONDS,
+    RECOVERABLE_FETCH_ERRORS,
     IncompleteSnapshot,
-    JSON_TIMEOUT_SECONDS,
+    as_jobs,
+    enrich_jobs,
     fetch_json,
+    fetch_offset_pages,
     fetch_text,
+    is_relevant_title,
+    join_unique,
     plain_text,
-    read_json,
+    read_browser_json,
     read_url,
-    request_with_retry,
-    workday_relevant_title,
+    source_context,
+    text_fields,
 )
 
 
 LOGGER = logging.getLogger(__name__)
 
 
-def fetch_dassault_systemes():
-    endpoint = "https://www.3ds.com/apisearch/card_search_api"
-    limit = 100
-    offset = 0
-    hits = []
-    query = '#all card_content_lang:en  (card_content_type="career") '
+def extract_jobposting_jsonld(page):
+    scripts = re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>'
+        r'(.*?)</script>',
+        page,
+        re.IGNORECASE | re.DOTALL,
+    )
 
-    while True:
-        url = endpoint + "?" + urlencode({
-            "q": query,
+    for script in scripts:
+        try:
+            data = json.loads(unescape(script).strip())
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        for candidate in data if isinstance(data, list) else [data]:
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("@type") == "JobPosting"
+            ):
+                return candidate
+
+    return None
+
+
+def _as_list(value):
+    return [value] if isinstance(value, dict) else value or []
+
+
+def _schema_address(item):
+    address = item.get("address") if isinstance(item, dict) else None
+
+    if not isinstance(address, dict):
+        return None
+
+    parts = []
+
+    for key in ("addressLocality", "addressRegion", "addressCountry"):
+        value = address.get(key)
+
+        if isinstance(value, dict):
+            value = value.get("name")
+
+        if value:
+            parts.append(str(value))
+
+    return join_unique(parts, separator=", ")
+
+
+def schema_location(jobposting):
+    locations = [
+        _schema_address(item)
+        for item in _as_list(jobposting.get("jobLocation"))
+    ]
+
+    if jobposting.get("jobLocationType") == "TELECOMMUTE":
+        required_places = [
+            str(item["name"])
+            for item in _as_list(
+                jobposting.get("applicantLocationRequirements")
+            )
+            if isinstance(item, dict) and item.get("name")
+        ]
+        remote = "Remote"
+
+        if required_places:
+            remote += " - " + ", ".join(required_places)
+
+        locations.append(remote)
+
+    return join_unique(locations)
+
+
+def schema_salary(jobposting):
+    base = jobposting.get("baseSalary")
+
+    if not isinstance(base, dict):
+        return None
+
+    value = base.get("value") or {}
+
+    if not isinstance(value, dict):
+        return None
+
+    minimum = value.get("minValue")
+    maximum = value.get("maxValue")
+
+    if minimum is not None and maximum is not None:
+        result = f"{minimum} – {maximum}"
+    elif value.get("value") is not None:
+        result = str(value["value"])
+    else:
+        return None
+
+    if base.get("currency"):
+        result += f" {base['currency']}"
+
+    if value.get("unitText"):
+        result += f" / {str(value['unitText']).lower()}"
+
+    return result
+
+
+def _jsonld_fields(schema, fallback_location=None):
+    description = plain_text(schema.get("description") or "")
+
+    return {
+        "location": schema_location(schema) or fallback_location,
+        **text_fields(description, salary_text=schema_salary(schema)),
+    }
+
+
+def fetch_dassault_systemes():
+    company = "Dassault Systèmes"
+    context = source_context(company, "dassault")
+
+    def fetch_page(offset):
+        query = urlencode({
+            "q": '#all card_content_lang:en  (card_content_type="career") ',
             "s": "desc(card_content_start_datetime)",
             "b": offset,
-            "hf": limit,
+            "hf": 100,
             "output_format": "json",
         })
-        data = fetch_json(
-            url,
-            context="company='Dassault Systèmes' source=dassault",
+        return fetch_json(
+            f"https://www.3ds.com/apisearch/card_search_api?{query}",
+            context=context,
         )
-        page = data.get("hits") or []
 
-        if not page:
-            break
+    jobs = []
 
-        hits.extend(page)
-        offset += len(page)
-
-        if offset >= data.get("nhits", offset):
-            break
-
-    result = []
-
-    for hit in hits:
+    for hit in fetch_offset_pages(
+        fetch_page,
+        items_key="hits",
+        total_key="nhits",
+    ):
         metadata = {
             item.get("name"): item.get("value")
             for item in hit.get("metas") or []
@@ -78,33 +182,38 @@ def fetch_dassault_systemes():
         if not job_id or not job_url:
             continue
 
-        description = plain_text(metadata.get("content_summary") or "")
-
-        result.append({
+        jobs.append({
             "source": "dassault:careers",
             "source_job_id": job_id,
-            "company": "Dassault Systèmes",
+            "company": company,
             "title": metadata.get("content_title") or "",
             "location": metadata.get("content_info_2_value"),
             "url": job_url,
-            "description": description,
-            "salary_text": extract_salary(description),
-            "experience_text": extract_experience(description),
+            **text_fields(plain_text(metadata.get("content_summary") or "")),
         })
 
-    return _as_jobs(result)
+    return as_jobs(jobs)
+
+
+def _visma_field(block, opening_tag):
+    match = re.search(
+        rf"{opening_tag}(.*?)</div>",
+        block,
+        re.IGNORECASE | re.DOTALL,
+    )
+    return plain_text(match.group(1)) if match else ""
 
 
 def fetch_visma():
     page = fetch_text(
         "https://www.visma.com/careers/open-positions",
-        context="company='Visma' source=visma",
+        context=source_context("Visma", "visma"),
     )
     blocks = re.split(
         r'(?=<div role="listitem" class="openposition-list-item)',
         page,
     )[1:]
-    result = []
+    jobs = []
     seen_ids = set()
 
     for block in blocks:
@@ -114,7 +223,6 @@ def fetch_visma():
         if not title_match or not url_match:
             continue
 
-        title = unescape(title_match.group(1)).strip()
         job_url = unescape(url_match.group(1)).strip()
         parsed_url = urlsplit(job_url)
         job_id = f"{parsed_url.netloc}{parsed_url.path}".rstrip("/")
@@ -123,63 +231,31 @@ def fetch_visma():
             continue
 
         seen_ids.add(job_id)
-
-        country_match = re.search(
-            r'fs-cmssort-field="countries"[^>]*>(.*?)</div>',
+        country = _visma_field(block, r'fs-cmssort-field="countries"[^>]*>')
+        city = _visma_field(
             block,
-            re.IGNORECASE | re.DOTALL,
+            r'class="text-size-small text-wrap line-break no-gap w-embed">',
         )
-        city_match = re.search(
-            r'class="text-size-small text-wrap line-break '
-            r'no-gap w-embed">(.*?)</div>',
-            block,
-            re.IGNORECASE | re.DOTALL,
-        )
-        area_match = re.search(
-            r'fs-cmssort-field="areasofwork"[^>]*>(.*?)</div>',
-            block,
-            re.IGNORECASE | re.DOTALL,
-        )
-        tags_match = re.search(
-            r'fs-cmssort-field="tags"[^>]*>(.*?)</div>',
-            block,
-            re.IGNORECASE | re.DOTALL,
-        )
+        area = _visma_field(block, r'fs-cmssort-field="areasofwork"[^>]*>')
+        tags = _visma_field(block, r'fs-cmssort-field="tags"[^>]*>')
 
-        location_parts = []
-
-        for match in (country_match, city_match):
-            value = plain_text(match.group(1)) if match else ""
-            value = value.strip(" |")
-
-            if value and value not in location_parts:
-                location_parts.append(value)
-
-        description = " ".join(
-            value
-            for value in (
-                plain_text(area_match.group(1)) if area_match else "",
-                plain_text(tags_match.group(1)) if tags_match else "",
-            )
-            if value
-        )
-
-        result.append({
+        jobs.append({
             "source": "visma:careers",
             "source_job_id": job_id,
             "company": "Visma",
-            "title": title,
-            "location": ", ".join(location_parts) or None,
+            "title": unescape(title_match.group(1)).strip(),
+            "location": join_unique(
+                (country.strip(" |"), city.strip(" |")),
+                separator=", ",
+            ),
             "url": job_url,
-            "description": description,
-            "salary_text": extract_salary(description),
-            "experience_text": extract_experience(description),
+            **text_fields(" ".join(value for value in (area, tags) if value)),
         })
 
-    if not result:
+    if not jobs:
         raise ValueError("Visma: no jobs found")
 
-    return _as_jobs(result)
+    return as_jobs(jobs)
 
 
 class HiddenInputParser(HTMLParser):
@@ -231,23 +307,64 @@ def sage_listing_rows(page):
     return rows
 
 
+def _sage_next_page_form(page):
+    """Campos del postback de Salesforce para la página siguiente.
+
+    Devuelve ``None`` en la última página.
+    """
+    next_anchor = re.search(
+        r'<a href="#" onclick="([^"]+)" '
+        r'class="link-pagination">Next</a>',
+        page,
+        re.IGNORECASE,
+    )
+
+    if not next_anchor:
+        return None
+
+    next_values = re.search(
+        r"jsfcljs\([^,]+,'([^,]+),([^']+)'",
+        next_anchor.group(1),
+    )
+    form = re.search(
+        r'<form id="([^"]+)"[^>]+'
+        r'action="/careers/fRecruit__ApplyJobList"',
+        page,
+        re.IGNORECASE,
+    )
+
+    if not next_values or not form:
+        raise ValueError("Sage: invalid pagination form")
+
+    parser = HiddenInputParser()
+    parser.feed(page)
+    fields = parser.values
+    fields[form.group(1)] = form.group(1)
+    fields[next_values.group(1)] = next_values.group(2)
+    return fields
+
+
 def fetch_sage():
+    company = "Sage"
+    context = source_context(company, "sagepeople")
     base_url = "https://sagehr.my.salesforce-sites.com"
-    list_path = "/careers/fRecruit__ApplyJobList"
+    list_url = f"{base_url}/careers/fRecruit__ApplyJobList"
+    # La paginación es un postback de Visualforce ligado a la sesión.
     opener = build_opener(HTTPCookieProcessor(CookieJar()))
-    request = Request(
-        f"{base_url}{list_path}?portal=English",
-        headers={"User-Agent": "Mozilla/5.0 Job-Radar/1.0"},
-    )
 
-    body = read_url(
-        request,
-        timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
-        context="company='Sage' source=sagepeople",
-        opener=opener,
-    )
-    page = body.decode("utf-8", errors="ignore")
+    def read_page(request):
+        body = read_url(
+            request,
+            timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
+            context=context,
+            opener=opener,
+        )
+        return body.decode("utf-8", errors="ignore")
 
+    page = read_page(Request(
+        f"{list_url}?portal=English",
+        headers={"User-Agent": BROWSER_USER_AGENT},
+    ))
     postings = []
     page_signatures = set()
 
@@ -263,389 +380,153 @@ def fetch_sage():
 
         page_signatures.add(signature)
         postings.extend(rows)
+        fields = _sage_next_page_form(page)
 
-        next_anchor = re.search(
-            r'<a href="#" onclick="([^"]+)" '
-            r'class="link-pagination">Next</a>',
-            page,
-            re.IGNORECASE,
-        )
-
-        if not next_anchor:
+        if fields is None:
             break
 
-        next_values = re.search(
-            r"jsfcljs\([^,]+,'([^,]+),([^']+)'",
-            next_anchor.group(1),
-        )
-        form = re.search(
-            r'<form id="([^"]+)"[^>]+'
-            r'action="/careers/fRecruit__ApplyJobList"',
-            page,
-            re.IGNORECASE,
-        )
-
-        if not next_values or not form:
-            raise ValueError("Sage: invalid pagination form")
-
-        parser = HiddenInputParser()
-        parser.feed(page)
-        fields = parser.values
-        fields[form.group(1)] = form.group(1)
-        fields[next_values.group(1)] = next_values.group(2)
-        request = Request(
-            f"{base_url}{list_path}",
+        page = read_page(Request(
+            list_url,
             data=urlencode(fields).encode("utf-8"),
             headers={
-                "User-Agent": "Mozilla/5.0 Job-Radar/1.0",
+                "User-Agent": BROWSER_USER_AGENT,
                 "Content-Type": "application/x-www-form-urlencoded",
             },
-        )
-
-        body = read_url(
-            request,
-            timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
-            context="company='Sage' source=sagepeople",
-            opener=opener,
-        )
-        page = body.decode("utf-8", errors="ignore")
+        ))
     else:
         raise ValueError("Sage: pagination limit reached")
 
     jobs = []
-    enrichment_targets = []
 
     for posting in postings:
-        job_url = (
-            f"{base_url}/careers/fRecruit__ApplyJob?"
-            + urlencode({
-                "vacancyNo": posting["id"],
-                "portal": "English",
-            })
-        )
+        query = urlencode({"vacancyNo": posting["id"], "portal": "English"})
         location = ", ".join(
             value
             for value in (posting["office"], posting["country"])
             if value and value != "\xa0"
         )
-        job = {
+        jobs.append({
             "source": "sagepeople:sage",
             "source_job_id": posting["id"],
-            "company": "Sage",
+            "company": company,
             "title": posting["title"],
             "location": location or None,
-            "url": job_url,
-            "description": "",
-            "salary_text": None,
-            "experience_text": None,
-        }
-        jobs.append(job)
-
-        if workday_relevant_title(job["title"]):
-            enrichment_targets.append(job)
+            "url": f"{base_url}/careers/fRecruit__ApplyJob?{query}",
+            **text_fields(""),
+        })
 
     def fetch_detail(job):
-        page = fetch_text(
-            job["url"],
-            context="company='Sage' source=sagepeople",
+        schema = extract_jobposting_jsonld(
+            fetch_text(job["url"], context=context)
         )
-        schema = extract_jobposting_jsonld(page)
 
         if not schema:
             raise ValueError("JobPosting JSON-LD not found")
 
-        description = plain_text(schema.get("description") or "")
+        return job, _jsonld_fields(schema, fallback_location=job["location"])
 
-        return job, {
-            "location": schema_location(schema) or job["location"],
-            "description": description,
-            "salary_text": (
-                schema_salary(schema)
-                or extract_salary(description)
-            ),
-            "experience_text": extract_experience(description),
-        }
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [
-            executor.submit(fetch_detail, job)
-            for job in enrichment_targets
-        ]
-
-        for future in as_completed(futures):
-            try:
-                job, values = future.result()
-                job.update(values)
-            except Exception as error:
-                LOGGER.warning(
-                    "enrichment_detail_failed company='Sage' "
-                    "source=sagepeople error_type=%s error_message=%r",
-                    type(error).__name__,
-                    str(error),
-                )
-
-    return _as_jobs(jobs)
-
-
-def schema_location(jobposting):
-    locations = []
-
-    raw_locations = jobposting.get("jobLocation") or []
-
-    if isinstance(raw_locations, dict):
-        raw_locations = [raw_locations]
-
-    for item in raw_locations:
-        if not isinstance(item, dict):
-            continue
-
-        address = item.get("address") or {}
-
-        if not isinstance(address, dict):
-            continue
-
-        parts = []
-
-        for key in (
-            "addressLocality",
-            "addressRegion",
-            "addressCountry",
-        ):
-            value = address.get(key)
-
-            if isinstance(value, dict):
-                value = value.get("name")
-
-            if value and str(value) not in parts:
-                parts.append(str(value))
-
-        if parts:
-            value = ", ".join(parts)
-
-            if value not in locations:
-                locations.append(value)
-
-    if jobposting.get("jobLocationType") == "TELECOMMUTE":
-        remote = "Remote"
-
-        requirements = (
-            jobposting.get("applicantLocationRequirements") or []
-        )
-
-        if isinstance(requirements, dict):
-            requirements = [requirements]
-
-        required_places = []
-
-        for item in requirements:
-            if not isinstance(item, dict):
-                continue
-
-            name = item.get("name")
-
-            if name:
-                required_places.append(str(name))
-
-        if required_places:
-            remote += " - " + ", ".join(required_places)
-
-        if remote not in locations:
-            locations.append(remote)
-
-    return "; ".join(locations) or None
-
-
-def schema_salary(jobposting):
-    base = jobposting.get("baseSalary")
-
-    if not isinstance(base, dict):
-        return None
-
-    currency = base.get("currency") or ""
-    value = base.get("value") or {}
-
-    if not isinstance(value, dict):
-        return None
-
-    minimum = value.get("minValue")
-    maximum = value.get("maxValue")
-    exact = value.get("value")
-    unit = value.get("unitText")
-
-    if minimum is not None and maximum is not None:
-        result = f"{minimum} – {maximum}"
-
-    elif exact is not None:
-        result = str(exact)
-
-    else:
-        return None
-
-    if currency:
-        result += f" {currency}"
-
-    if unit:
-        result += f" / {str(unit).lower()}"
-
-    return result
-
-
-def extract_jobposting_jsonld(page):
-    scripts = re.findall(
-        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>'
-        r'(.*?)</script>',
-        page,
-        re.IGNORECASE | re.DOTALL,
+    enrich_jobs(
+        [job for job in jobs if is_relevant_title(job["title"])],
+        fetch_detail,
+        company=company,
+        source="sagepeople",
+        recoverable=Exception,
     )
-
-    for script in scripts:
-        try:
-            data = json.loads(unescape(script).strip())
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-        candidates = data if isinstance(data, list) else [data]
-
-        for candidate in candidates:
-            if (
-                isinstance(candidate, dict)
-                and candidate.get("@type") == "JobPosting"
-            ):
-                return candidate
-
-    return None
+    return as_jobs(jobs)
 
 
-def fetch_spendesk():
+def fetch_teamtailor_company(company, base_url, source):
     data = fetch_json(
-        "https://career.spendesk.com/jobs.json",
-        context="company='Spendesk' source=teamtailor",
+        base_url.rstrip("/") + "/jobs.json",
+        context=source_context(company, source),
     )
-
-    result = []
+    jobs = []
 
     for item in data.get("items", []):
         schema = item.get("_jobposting") or {}
-
         description = plain_text(
             item.get("content_html")
             or schema.get("description")
             or ""
         )
 
-        result.append({
-            "source": "teamtailor:spendesk",
+        jobs.append({
+            "source": source,
             "source_job_id": str(item["id"]),
-            "company": "Spendesk",
+            "company": company,
             "title": item["title"],
             "location": schema_location(schema),
             "url": item["url"],
-            "description": description,
-            "salary_text": (
-                schema_salary(schema)
-                or extract_salary(description)
-            ),
-            "experience_text": extract_experience(description),
+            **text_fields(description, salary_text=schema_salary(schema)),
         })
 
-    return _as_jobs(result)
+    return as_jobs(jobs)
 
 
 def fetch_thetaray():
-    url = (
-        "https://www.comeet.co/careers-api/2.0/company/"
-        "72.00F/positions"
-        "?token=27F9FC16779FC13F8EFA13F84FE27F77D"
-        "&details=true"
-    )
-
     data = fetch_json(
-        url,
-        context="company='ThetaRay' source=comeet",
+        "https://www.comeet.co/careers-api/2.0/company/72.00F/positions"
+        "?token=27F9FC16779FC13F8EFA13F84FE27F77D&details=true",
+        context=source_context("ThetaRay", "comeet"),
     )
-
-    result = []
+    jobs = []
 
     for item in data:
-        if item.get("is_internal"):
-            continue
-
-        html_parts = []
-
-        for detail in item.get("details") or []:
-            value = detail.get("value")
-
-            if value:
-                html_parts.append(value)
-
-        description = plain_text(" ".join(html_parts))
-
-        location_data = item.get("location") or {}
-
-        location = (
-            location_data.get("name")
-            if isinstance(location_data, dict)
-            else None
-        )
-
-        url_value = (
+        job_url = (
             item.get("url_active_page")
             or item.get("url_comeet_hosted_page")
             or item.get("url_recruit_hosted_page")
         )
 
-        if not url_value:
+        if item.get("is_internal") or not job_url:
             continue
 
-        result.append({
+        location = item.get("location") or {}
+        description = plain_text(" ".join(
+            detail["value"]
+            for detail in item.get("details") or []
+            if detail.get("value")
+        ))
+
+        jobs.append({
             "source": "comeet:thetaray",
             "source_job_id": str(item["uid"]),
             "company": "ThetaRay",
             "title": item["name"],
-            "location": location,
-            "url": url_value,
-            "description": description,
-            "salary_text": extract_salary(description),
-            "experience_text": extract_experience(description),
+            "location": (
+                location.get("name") if isinstance(location, dict) else None
+            ),
+            "url": job_url,
+            **text_fields(description),
         })
 
-    return _as_jobs(result)
+    return as_jobs(jobs)
 
 
-def fetch_deel_job(job_id, company="Deel", board="deel"):
-    url = (
-        f"https://jobs.deel.com/{board}/job-details/"
-        f"{job_id}/overview"
+def fetch_deel_job(job_id, company, board):
+    url = f"https://jobs.deel.com/{board}/job-details/{job_id}/overview"
+    schema = extract_jobposting_jsonld(
+        fetch_text(url, context=source_context(company, "deel"))
     )
-
-    page = fetch_text(
-        url,
-        context=f"company={company!r} source=deel",
-    )
-    schema = extract_jobposting_jsonld(page)
 
     if not schema:
         return None
 
-    description = plain_text(schema.get("description") or "")
+    # La fuente histórica del portal propio de Deel se conserva por
+    # identidad estable; el resto de boards usan deel:<board>.
+    source = (
+        "deel:careers"
+        if company == "Deel" and board == "deel"
+        else f"deel:{board}"
+    )
 
     return Job.from_mapping({
-        "source": (
-            "deel:careers"
-            if company == "Deel" and board == "deel"
-            else f"deel:{board}"
-        ),
+        "source": source,
         "source_job_id": job_id,
         "company": company,
         "title": schema.get("title") or "Untitled",
-        "location": schema_location(schema),
         "url": url,
-        "description": description,
-        "salary_text": (
-            schema_salary(schema)
-            or extract_salary(description)
-        ),
-        "experience_text": extract_experience(description),
+        **_jsonld_fields(schema),
     })
 
 
@@ -653,7 +534,7 @@ def _fetch_deel_jobs(company, board, ids):
     if not ids:
         raise ValueError(f"{company}: no job IDs found")
 
-    result = []
+    jobs = []
     failed_ids = []
     error_types = set()
 
@@ -666,7 +547,7 @@ def _fetch_deel_jobs(company, board, ids):
         for future in as_completed(futures):
             try:
                 job = future.result()
-            except (OSError, HTTPException, ValueError) as error:
+            except RECOVERABLE_FETCH_ERRORS as error:
                 failed_ids.append(futures[future])
                 error_types.add(type(error).__name__)
                 continue
@@ -677,15 +558,15 @@ def _fetch_deel_jobs(company, board, ids):
                 failed_ids.append(futures[future])
                 error_types.add("missing_jsonld")
             else:
-                result.append(job)
+                jobs.append(job)
 
-    if not result:
+    if not jobs:
         raise ValueError(
             f"{company}: no jobs parsed ({len(failed_ids)} failures)"
         )
 
     if not failed_ids:
-        return _as_jobs(result)
+        return jobs
 
     LOGGER.warning(
         "job_pages_failed company=%r source=deel failures=%s "
@@ -696,7 +577,7 @@ def _fetch_deel_jobs(company, board, ids):
         ",".join(sorted(error_types)),
         ",".join(sorted(failed_ids)[:10]),
     )
-    return IncompleteSnapshot(_as_jobs(result), failed_ids=failed_ids)
+    return IncompleteSnapshot(jobs, failed_ids=failed_ids)
 
 
 def _deel_job_ids(page, pattern):
@@ -706,7 +587,7 @@ def _deel_job_ids(page, pattern):
 def fetch_deel_company(company, board):
     page = fetch_text(
         f"https://jobs.deel.com/{board}",
-        context=f"company={company!r} source=deel",
+        context=source_context(company, "deel"),
     )
     ids = _deel_job_ids(
         page,
@@ -718,73 +599,48 @@ def fetch_deel_company(company, board):
 def fetch_deel():
     page = fetch_text(
         "https://www.deel.com/careers/",
-        context="company='Deel' source=deel",
+        context=source_context("Deel", "deel"),
     )
     ids = _deel_job_ids(page, r"job-details/([0-9a-fA-F-]{36})")
     return _fetch_deel_jobs("Deel", "deel", ids)
 
 
-def ant_experience(posting, description):
-    extracted = extract_experience(description)
-
-    if extracted:
-        return extracted
-
+def _ant_experience_range(posting):
     experience = posting.get("experience") or {}
 
-    if not isinstance(experience, dict):
+    if not isinstance(experience, dict) or experience.get("from") is None:
         return None
 
-    minimum = experience.get("from")
-    maximum = experience.get("to")
+    if experience.get("to") is not None:
+        return f"{experience['from']}-{experience['to']} years of experience"
 
-    if minimum is None:
-        return None
-
-    if maximum is not None:
-        return f"{minimum}-{maximum} years of experience"
-
-    return f"{minimum}+ years of experience"
+    return f"{experience['from']}+ years of experience"
 
 
 def fetch_ant_group():
-    url = (
-        "https://hrcareersweb.antgroup.com/"
-        "api/social/position/search"
-    )
+    company = "Ant Group / Ant International"
     page_index = 1
-    page_size = 10
     postings = []
 
     while True:
-        payload = json.dumps({
-            "language": "en",
-            "channel": "group_official_site",
-            "categories": "",
-            "key": "",
-            "regions": "",
-            "subCategories": "",
-            "pageIndex": page_index,
-            "pageSize": page_size,
-            "bgCode": "M7892",
-        }).encode("utf-8")
-        request = Request(
-            url,
-            data=payload,
+        data = read_browser_json(
+            "https://hrcareersweb.antgroup.com/api/social/position/search",
+            context=source_context(company, "ant"),
+            payload={
+                "language": "en",
+                "channel": "group_official_site",
+                "categories": "",
+                "key": "",
+                "regions": "",
+                "subCategories": "",
+                "pageIndex": page_index,
+                "pageSize": 10,
+                "bgCode": "M7892",
+            },
             headers={
-                "User-Agent": "Mozilla/5.0 Job-Radar/1.0",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
                 "Origin": "https://www.ant-intl.com",
                 "Referer": "https://www.ant-intl.com/",
             },
-            method="POST",
-        )
-
-        data = read_json(
-            request,
-            timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
-            context="company='Ant Group / Ant International' source=ant",
         )
 
         if not data.get("success"):
@@ -805,7 +661,7 @@ def fetch_ant_group():
 
         page_index += 1
 
-    result = []
+    jobs = []
 
     for posting in postings:
         job_id = str(posting.get("id") or "").strip()
@@ -814,51 +670,35 @@ def fetch_ant_group():
         if not job_id or not title:
             continue
 
-        description = plain_text(
-            " ".join(
-                value
-                for value in (
-                    posting.get("description"),
-                    posting.get("requirement"),
-                )
-                if value
+        description = plain_text(" ".join(
+            value
+            for value in (
+                posting.get("description"),
+                posting.get("requirement"),
             )
-        )
+            if value
+        ))
+        query = urlencode({"positionId": job_id, "locale": "US"})
 
-        result.append({
+        jobs.append({
             "source": "ant:careers",
             "source_job_id": job_id,
-            "company": "Ant Group / Ant International",
+            "company": company,
             "title": title,
-            "location": "; ".join(
-                posting.get("workLocations") or []
-            ) or None,
-            "url": (
-                "https://talent.antgroup.com/off-campus-position?"
-                + urlencode({
-                    "positionId": job_id,
-                    "locale": "US",
-                })
+            "location": "; ".join(posting.get("workLocations") or []) or None,
+            "url": f"https://talent.antgroup.com/off-campus-position?{query}",
+            **text_fields(
+                description,
+                experience_fallback=_ant_experience_range(posting),
             ),
-            "description": description,
-            "salary_text": extract_salary(description),
-            "experience_text": ant_experience(posting, description),
         })
 
-    return _as_jobs(result)
+    return as_jobs(jobs)
 
 
 def fetch_mambu_job(job_id):
-    url = (
-        "https://careers-mambu.icims.com/jobs/"
-        f"{job_id}/job?in_iframe=1"
-    )
-
-    page = fetch_text(
-        url,
-        context="company='Mambu' source=icims",
-    )
-
+    url = f"https://careers-mambu.icims.com/jobs/{job_id}/job?in_iframe=1"
+    page = fetch_text(url, context=source_context("Mambu", "icims"))
     title_match = re.search(
         r"<h1[^>]*>(.*?)</h1>",
         page,
@@ -868,180 +708,104 @@ def fetch_mambu_job(job_id):
     if not title_match:
         return None
 
-    title = plain_text(title_match.group(1))
     description = plain_text(page)
-
     location_match = re.search(
-        r"Job Locations?\s+(.+?)\s+"
-        r"(?:Posted Date|Job ID)",
+        r"Job Locations?\s+(.+?)\s+(?:Posted Date|Job ID)",
         description,
         re.IGNORECASE,
-    )
-
-    location = (
-        location_match.group(1).strip()
-        if location_match
-        else None
     )
 
     return Job.from_mapping({
         "source": "icims:mambu",
         "source_job_id": str(job_id),
         "company": "Mambu",
-        "title": title,
-        "location": location,
+        "title": plain_text(title_match.group(1)),
+        "location": (
+            location_match.group(1).strip() if location_match else None
+        ),
         "url": url,
-        "description": description,
-        "salary_text": extract_salary(description),
-        "experience_text": extract_experience(description),
+        **text_fields(description),
     })
 
 
 def fetch_mambu():
-    listing_url = (
-        "https://careers-mambu.icims.com/jobs/search"
-        "?ss=1&searchRelation=keyword_all&in_iframe=1"
-    )
-
     page = fetch_text(
-        listing_url,
-        context="company='Mambu' source=icims",
+        "https://careers-mambu.icims.com/jobs/search"
+        "?ss=1&searchRelation=keyword_all&in_iframe=1",
+        context=source_context("Mambu", "icims"),
     )
-
-    ids = sorted(set(
-        re.findall(
-            r"/jobs/(\d+)/[^\"'<>\s]+",
-            page,
-        )
-    ))
+    ids = sorted(set(re.findall(r"/jobs/(\d+)/[^\"'<>\s]+", page)))
 
     if not ids:
         raise ValueError("Mambu: no job IDs found")
 
-    result = []
+    jobs = [job for job in map(fetch_mambu_job, ids) if job]
 
-    for job_id in ids:
-        job = fetch_mambu_job(job_id)
-
-        if job:
-            result.append(job)
-
-    if not result:
+    if not jobs:
         raise ValueError("Mambu: jobs found but none parsed")
 
-    return _as_jobs(result)
+    return jobs
 
 
-def fetch_teamtailor_company(
-    company,
-    base_url,
-    source,
-):
-    data = fetch_json(
-        base_url.rstrip("/") + "/jobs.json",
-        context=f"company={company!r} source={source}",
-    )
-
-    result = []
-
-    for item in data.get("items", []):
-        schema = item.get("_jobposting") or {}
-
-        description = plain_text(
-            item.get("content_html")
-            or schema.get("description")
-            or ""
-        )
-
-        result.append({
-            "source": source,
-            "source_job_id": str(item["id"]),
-            "company": company,
-            "title": item["title"],
-            "location": schema_location(schema),
-            "url": item["url"],
-            "description": description,
-            "salary_text": (
-                schema_salary(schema)
-                or extract_salary(description)
-            ),
-            "experience_text": extract_experience(description),
-        })
-
-    return _as_jobs(result)
-
-
-def fetch_seedtag():
-    return fetch_teamtailor_company(
-        company="Seedtag",
-        base_url="https://jobs.seedtag.com",
-        source="teamtailor:seedtag",
-    )
-
-
-def fetch_lingokids():
-    return fetch_teamtailor_company(
-        company="Lingokids",
-        base_url="https://jobs.lingokids.com",
-        source="teamtailor:lingokids",
-    )
-
-
-def fetch_caixabank_tech():
-    careers_url = (
-        "https://www.caixabanktech.com/"
-        "es/join-us-es/"
-    )
-
-    listing = fetch_text(
-        careers_url,
-        context="company='CaixaBank Tech' source=caixabank-tech",
-    )
-
-    raw_links = re.findall(
-        r'''href=["']([^"']+)["']''',
-        listing,
+def _caixabank_location(page_text):
+    match = re.search(
+        r"Ubicaci[oó]n:\s*(.+?)"
+        r"(?=\s+(?:Jornada Laboral|Contrato|Vacantes):)",
+        page_text,
         re.IGNORECASE,
     )
 
+    if not match:
+        return None
+
+    raw_location = match.group(1).strip()
+    cities = re.findall(
+        r"\b(?:Barcelona|Madrid|Sevilla)\b",
+        raw_location,
+        re.IGNORECASE,
+    )
+
+    if not cities:
+        return raw_location
+
+    return "; ".join(dict.fromkeys(city.title() for city in cities))
+
+
+def fetch_caixabank_tech():
+    company = "CaixaBank Tech"
+    context = source_context(company, "caixabank-tech")
+    listing = fetch_text(
+        "https://www.caixabanktech.com/es/join-us-es/",
+        context=context,
+    )
     job_urls = set()
 
-    for raw_link in raw_links:
-        link = unescape(raw_link)
-        link = link.split("#", 1)[0].split("?", 1)[0]
+    for raw_link in re.findall(
+        r'''href=["']([^"']+)["']''',
+        listing,
+        re.IGNORECASE,
+    ):
+        link = unescape(raw_link).split("#", 1)[0].split("?", 1)[0]
 
         if link.startswith("/"):
-            link = (
-                "https://www.caixabanktech.com"
-                + link
-            )
+            link = "https://www.caixabanktech.com" + link
 
         if re.fullmatch(
-            r"https://(?:www\.)?caixabanktech\.com/"
-            r"es/job/[^/]+/?",
+            r"https://(?:www\.)?caixabanktech\.com/es/job/[^/]+/?",
             link,
             re.IGNORECASE,
         ):
             job_urls.add(link.rstrip("/") + "/")
 
     if not job_urls:
-        raise ValueError(
-            "CaixaBank Tech: no job links found"
-        )
+        raise ValueError("CaixaBank Tech: no job links found")
 
     jobs = []
 
     for url in sorted(job_urls):
-        page = fetch_text(
-            url,
-            context="company='CaixaBank Tech' source=caixabank-tech",
-        )
-        page_text = plain_text(page)
-
+        page = fetch_text(url, context=context)
         title_match = re.search(
-            r"<title[^>]*>\s*"
-            r"CaixaBank Tech\s*\|\s*"
-            r"(.*?)</title>",
+            r"<title[^>]*>\s*CaixaBank Tech\s*\|\s*(.*?)</title>",
             page,
             re.IGNORECASE | re.DOTALL,
         )
@@ -1054,291 +818,29 @@ def fetch_caixabank_tech():
             )
 
         if not title_match:
-            raise ValueError(
-                f"CaixaBank Tech: title not found: {url}"
-            )
+            raise ValueError(f"CaixaBank Tech: title not found: {url}")
 
-        title = plain_text(title_match.group(1))
-
-        location_match = re.search(
-            r"Ubicaci[oó]n:\s*(.+?)"
-            r"(?=\s+(?:Jornada Laboral|Contrato|Vacantes):)",
-            page_text,
-            re.IGNORECASE,
-        )
-
-        location = None
-
-        if location_match:
-            raw_location = location_match.group(1).strip()
-
-            cities = re.findall(
-                r"\b(?:Barcelona|Madrid|Sevilla)\b",
-                raw_location,
-                re.IGNORECASE,
-            )
-
-            if cities:
-                location = "; ".join(dict.fromkeys(
-                    city.title()
-                    for city in cities
-                ))
-            else:
-                location = raw_location
-
+        page_text = plain_text(page)
+        # La descripción empieza en "Buscamos personas"; sin ese marcador se
+        # conserva el texto completo de la página.
         description_match = re.search(
             r"\bBuscamos personas\b",
             page_text,
             re.IGNORECASE,
         )
 
-        description = (
-            page_text[description_match.start():]
-            if description_match
-            else page_text
-        )
-
-        source_job_id = url.rstrip("/").rsplit("/", 1)[-1]
-
         jobs.append({
             "source": "caixabank-tech:careers",
-            "source_job_id": source_job_id,
-            "company": "CaixaBank Tech",
-            "title": title,
-            "location": location,
+            "source_job_id": url.rstrip("/").rsplit("/", 1)[-1],
+            "company": company,
+            "title": plain_text(title_match.group(1)),
+            "location": _caixabank_location(page_text),
             "url": url,
-            "description": description,
-            "salary_text": extract_salary(description),
-            "experience_text": extract_experience(description),
+            **text_fields(
+                page_text[description_match.start():]
+                if description_match
+                else page_text
+            ),
         })
 
-    return _as_jobs(jobs)
-
-
-def revolut_slug(title):
-    value = (
-        unicodedata.normalize("NFKD", title)
-        .encode("ascii", "ignore")
-        .decode("ascii")
-    )
-
-    value = value.lower()
-
-    return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
-
-
-def revolut_locations(position):
-    locations = []
-
-    for item in position.get("locations") or []:
-        name = (item.get("name") or "").strip()
-
-        if name and name not in locations:
-            locations.append(name)
-
-    return "; ".join(locations) or None
-
-
-def _curl_transient_connection_error(error, curl_requests):
-    exceptions = getattr(curl_requests, "exceptions", None)
-    transient_types = tuple(
-        exception_type
-        for name in ("Timeout", "ConnectionError")
-        if isinstance(
-            exception_type := getattr(exceptions, name, None),
-            type,
-        )
-    )
-    return bool(transient_types and isinstance(error, transient_types))
-
-
-def _curl_get_with_retry(curl_requests, url, *, context, **kwargs):
-    def get():
-        response = curl_requests.get(url, **kwargs)
-        response.raise_for_status()
-        return response
-
-    return request_with_retry(
-        get,
-        context=context,
-        extra_transient_error=lambda error: _curl_transient_connection_error(
-            error,
-            curl_requests,
-        ),
-    )
-
-
-def fetch_revolut():
-    from curl_cffi import requests as curl_requests
-
-    careers_url = "https://www.revolut.com/en-US/careers/"
-
-    response = _curl_get_with_retry(
-        curl_requests,
-        careers_url,
-        context="company='Revolut' source=revolut",
-        impersonate="chrome",
-        headers={
-            "Accept-Language": "en-GB,en;q=0.9",
-        },
-        timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
-    )
-
-    next_match = re.search(
-        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>'
-        r'(.*?)</script>',
-        response.text,
-        re.IGNORECASE | re.DOTALL,
-    )
-
-    if not next_match:
-        raise ValueError("Revolut: __NEXT_DATA__ no encontrado")
-
-    next_data = json.loads(next_match.group(1))
-
-    build_id = next_data.get("buildId")
-    locale = next_data.get("locale") or "en-GB"
-
-    positions = (
-        next_data
-        .get("props", {})
-        .get("pageProps", {})
-        .get("positions", [])
-    )
-
-    if not build_id:
-        raise ValueError("Revolut: buildId no encontrado")
-
-    if not positions:
-        raise ValueError("Revolut: listado de ofertas vacío")
-
-    LOGGER.info(
-        "listing_fetched company='Revolut' source=revolut jobs_seen=%s",
-        len(positions),
-    )
-
-    # Solo descargamos descripción completa para títulos
-    # que podrían interesarnos.
-    interesting_title = re.compile(
-        r"\b("
-        r"data|analytics|"
-        r"engineer|engineering|"
-        r"developer|development|"
-        r"platform|infrastructure|"
-        r"etl|elt|warehouse|"
-        r"bi"
-        r")\b",
-        re.IGNORECASE,
-    )
-
-    candidates = [
-        position
-        for position in positions
-        if interesting_title.search(position.get("text") or "")
-    ]
-
-    LOGGER.info(
-        "enrichment_started company='Revolut' source=revolut candidates=%s",
-        len(candidates),
-    )
-
-    result = []
-    enriched = 0
-    failures = 0
-
-    candidate_ids = {str(position.get("id")) for position in candidates}
-
-    for position in positions:
-        job_id = str(position.get("id") or "").strip()
-        title = (position.get("text") or "").strip()
-
-        if not job_id or not title:
-            continue
-
-        slug = revolut_slug(title)
-        identifier = f"{slug}-{job_id}"
-        public_url = (
-            "https://www.revolut.com/"
-            "careers/position/"
-            f"{identifier}/"
-        )
-        description = ""
-
-        if job_id in candidate_ids:
-            detail_url = (
-                "https://www.revolut.com/"
-                f"_next/data/{build_id}/"
-                f"{locale}/careers/position/"
-                f"{identifier}.json"
-                f"?id={identifier}"
-            )
-
-            try:
-                detail_response = _curl_get_with_retry(
-                    curl_requests,
-                    detail_url,
-                    context="company='Revolut' source=revolut",
-                    impersonate="chrome",
-                    headers={
-                        "Accept-Language": "en-GB,en;q=0.9",
-                        "Referer": careers_url,
-                        "X-Nextjs-Data": "1",
-                    },
-                    timeout=JSON_TIMEOUT_SECONDS,
-                )
-
-                detail_json = detail_response.json()
-                detail_position = (
-                    detail_json
-                    .get("pageProps", {})
-                    .get("position", {})
-                )
-                description = plain_text(
-                    detail_position.get("description") or ""
-                )
-
-                if detail_position.get("locations"):
-                    position = {
-                        **position,
-                        "locations": detail_position["locations"],
-                    }
-
-                enriched += 1
-
-            except Exception as error:
-                failures += 1
-
-                LOGGER.warning(
-                    "enrichment_detail_failed company='Revolut' "
-                    "source=revolut title=%r error_type=%s",
-                    title,
-                    type(error).__name__,
-                )
-
-        result.append({
-            "source": "revolut:careers",
-            "source_job_id": job_id,
-            "company": "Revolut",
-            "title": title,
-            "location": revolut_locations(position),
-            "url": public_url,
-            "description": description,
-            "salary_text": extract_salary(description),
-            "experience_text": extract_experience(description),
-        })
-
-    LOGGER.info(
-        "enrichment_finished company='Revolut' source=revolut "
-        "enriched=%s failures=%s",
-        enriched,
-        failures,
-    )
-
-    if failures:
-        LOGGER.warning(
-            "enrichment_failures company='Revolut' source=revolut "
-            "failures=%s",
-            failures,
-        )
-
-    return _as_jobs(result)
+    return as_jobs(jobs)

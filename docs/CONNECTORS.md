@@ -6,7 +6,7 @@ parámetros, orden y flags.
 ## Catálogo
 
 <!-- BEGIN GENERATED SOURCE CATALOG -->
-El registro actual contiene **106 fuentes**.
+El registro actual contiene **105 fuentes**.
 
 | Empresa | Tipo / `source` | Modo | `catch_all` |
 | --- | --- | --- | --- |
@@ -16,7 +16,6 @@ El registro actual contiene **106 fuentes**.
 | Adyen | `greenhouse` | required | no |
 | Block (incl. Afterpay) | `greenhouse` | required | no |
 | Chime | `greenhouse` | required | no |
-| Nubank | `greenhouse` | required | no |
 | Robinhood | `greenhouse` | required | no |
 | SoFi | `greenhouse` | required | no |
 | Coinbase | `greenhouse` | required | no |
@@ -78,6 +77,7 @@ El registro actual contiene **106 fuentes**.
 | Prefect | `ashby` | required | no |
 | PostHog | `ashby` | required | no |
 | Primer | `ashby` | required | no |
+| Nubank | `ashby` | required | no |
 | Mastercard | `workday` | required | no |
 | BBVA | `workday` | required | no |
 | Santander | `workday` | required | no |
@@ -110,7 +110,6 @@ El registro actual contiene **106 fuentes**.
 | Mambu | `icims` | required | sí |
 | Seedtag | `teamtailor` | required | sí |
 | Lingokids | `teamtailor` | required | sí |
-| Revolut | `portal propio` | opcional | sí |
 | CaixaBank Tech | `portal propio` | required | sí |
 | Dassault Systèmes | `portal propio` | required | sí |
 | Visma | `portal propio` | required | sí |
@@ -183,9 +182,7 @@ timeouts y reintentos. Hace un máximo de tres intentos ante timeouts, fallos de
 conexión y HTTP 408/429/500/502/503/504. Un 400, 401, 403 o 404 se propaga sin
 reintento. Un 200 con cuerpo JSON vacío (visto en Workday) también se
 reintenta; un JSON malformado se propaga. Las respuestas mayores de
-`MAX_RESPONSE_BYTES` (50 MB) fallan para no agotar memoria. Algunos portales
-requieren `curl_cffi`; su wrapper reutiliza la misma política para errores
-transitorios.
+`MAX_RESPONSE_BYTES` (50 MB) fallan para no agotar memoria.
 
 Si el listado se leyó completo pero falla el detalle de algunos IDs (error de
 red o página sin datos), no los descartes en silencio: devuelve

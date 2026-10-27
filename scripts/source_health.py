@@ -4,6 +4,7 @@
 import argparse
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -17,6 +18,7 @@ from job_radar.observability import (  # noqa: E402
     HEALTH_WINDOW,
     SourceHealth,
     build_source_health,
+    has_persistent_empty_snapshot,
     required_slo_breaches,
 )
 from job_radar.storage import RunRepository  # noqa: E402
@@ -46,7 +48,7 @@ def _compact_error(health: SourceHealth) -> str:
     return f"  last_error={detail[:120]}"
 
 
-def _date(value) -> str:
+def _date(value: datetime | None) -> str:
     return value.date().isoformat() if value is not None else "never"
 
 
@@ -57,6 +59,11 @@ def _format_health(health: SourceHealth) -> str:
         if health.consecutive_failures
         else ""
     )
+    empty = (
+        f"  consecutive_empty_snapshots={health.consecutive_empty_snapshots}"
+        if health.consecutive_empty_snapshots
+        else ""
+    )
     return (
         f"{health.health_status.upper():<10} "
         f"{health.company:<28} {health.source:<18} "
@@ -64,7 +71,7 @@ def _format_health(health: SourceHealth) -> str:
         f"{_percentage(health)}{mode} "
         f"last_success={_date(health.last_success_at)} "
         f"last_failure={_date(health.last_failure_at)}"
-        f"{failures}{_compact_error(health)}"
+        f"{failures}{empty}{_compact_error(health)}"
     )
 
 
@@ -74,7 +81,10 @@ def main(argv: list[str] | None = None) -> int:
     modes.add_argument(
         "--problems",
         action="store_true",
-        help="show only degraded and unhealthy sources",
+        help=(
+            "show only degraded and unhealthy sources, plus sources with a "
+            "persistent empty snapshot"
+        ),
     )
     modes.add_argument(
         "--check",
@@ -96,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
             source
             for source in health
             if source.health_status in {"degraded", "unhealthy"}
+            or has_persistent_empty_snapshot(source)
         )
     else:
         displayed = health

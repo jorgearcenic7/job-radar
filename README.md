@@ -66,7 +66,7 @@ La explicación completa está en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Fuentes configuradas
 
 <!-- BEGIN GENERATED SOURCE CATALOG -->
-Job Radar consulta **106 fuentes empresa/ATS** configuradas en código.
+Job Radar consulta **105 fuentes empresa/ATS** configuradas en código.
 <!-- END GENERATED SOURCE CATALOG -->
 
 `job_radar/connectors/registry.py` es la fuente de verdad. El catálogo detallado
@@ -87,7 +87,8 @@ perfil de Data Engineering con aproximadamente un año de experiencia:
 - aceptan ubicaciones españolas y remoto sin restricción, o remoto abierto a
   Europa/EMEA; rechazan remotos restringidos a otras regiones conocidas;
 - conservan la ubicación original y derivan `countries` con
-  `geonamescache`.
+  `geonamescache`; los estados de EE. UU. ("Atlanta, GA", "New Jersey") y los
+  códigos regionales junto a un país explícito no se leen como países.
 
 El extractor de salario exige una moneda (`€`, `$`, `£`, EUR, USD o GBP),
 acepta moneda antes o después, sufijos `k/K`, rangos y periodos publicados. El
@@ -144,9 +145,9 @@ Consulta estados, diagnóstico y configuración operativa en
 
 | Capa | Tecnología fijada o usada por el repo |
 | --- | --- |
-| Pipeline | Python 3.12, Psycopg 3.3.6, curl_cffi 0.16.3, geonamescache 3.0.2 |
+| Pipeline | Python 3.12, Psycopg 3.3.6, geonamescache 3.0.2 |
 | Datos | PostgreSQL 17 en Compose y CI; SQL versionado en `sql/` |
-| Web | Next.js 16.3.8, React 19.3.0, TypeScript 5.9.3, Tailwind CSS 4.3.3, node-postgres 8.23.0 |
+| Web | Next.js 16.4.2, React 19.3.0, TypeScript 5.9.3, Tailwind CSS 4.3.3, node-postgres 8.23.0 |
 | Automatización | Docker, GitHub Actions, Dependabot, CodeQL y Dependency Review |
 | Despliegue web | Vercel-compatible; la demo enlazada usa un dominio `vercel.app` |
 

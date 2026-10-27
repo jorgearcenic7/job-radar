@@ -1,6 +1,7 @@
-import os
 from dataclasses import dataclass
 from datetime import datetime
+
+from .connection import open_cursor, resolve_database_url
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,35 +19,26 @@ class SourceRunRecord:
     finished_at: datetime
     error_type: str | None
     error_message: str | None
+    snapshot_status: str | None = None
 
 
 class RunRepository:
     """Persists pipeline- and source-level execution metrics."""
 
     def __init__(self, database_url: str | None = None):
-        self.database_url = (
-            database_url
-            if database_url is not None
-            else os.getenv("DATABASE_URL", "")
-        )
-
-    def _connect(self):
-        import psycopg
-
-        return psycopg.connect(self.database_url, connect_timeout=10)
+        self.database_url = resolve_database_url(database_url)
 
     def create_ingestion_run(self, sources_total: int) -> int:
-        with self._connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO ingestion_runs (sources_total)
-                    VALUES (%s)
-                    RETURNING id
-                    """,
-                    (sources_total,),
-                )
-                return cursor.fetchone()[0]
+        with open_cursor(self.database_url) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO ingestion_runs (sources_total)
+                VALUES (%s)
+                RETURNING id
+                """,
+                (sources_total,),
+            )
+            return cursor.fetchone()[0]
 
     def finish_ingestion_run(
         self,
@@ -60,36 +52,33 @@ class RunRepository:
         jobs_closed: int,
         matches: int,
     ) -> None:
-        with self._connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE ingestion_runs
-                    SET finished_at = CURRENT_TIMESTAMP,
-                        status = %s,
-                        sources_succeeded = %s,
-                        sources_failed = %s,
-                        jobs_seen = %s,
-                        jobs_new = %s,
-                        jobs_closed = %s,
-                        matches = %s
-                    WHERE id = %s
-                    """,
-                    (
-                        status,
-                        sources_succeeded,
-                        sources_failed,
-                        jobs_seen,
-                        jobs_new,
-                        jobs_closed,
-                        matches,
-                        run_id,
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    raise ValueError(
-                        f"ingestion_run inexistente: {run_id}"
-                    )
+        with open_cursor(self.database_url) as cursor:
+            cursor.execute(
+                """
+                UPDATE ingestion_runs
+                SET finished_at = CURRENT_TIMESTAMP,
+                    status = %s,
+                    sources_succeeded = %s,
+                    sources_failed = %s,
+                    jobs_seen = %s,
+                    jobs_new = %s,
+                    jobs_closed = %s,
+                    matches = %s
+                WHERE id = %s
+                """,
+                (
+                    status,
+                    sources_succeeded,
+                    sources_failed,
+                    jobs_seen,
+                    jobs_new,
+                    jobs_closed,
+                    matches,
+                    run_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"ingestion_run inexistente: {run_id}")
 
     def create_source_run(
         self,
@@ -98,21 +87,20 @@ class RunRepository:
         company: str,
         source: str,
     ) -> int:
-        with self._connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO source_runs (
-                        ingestion_run_id,
-                        company,
-                        source
-                    )
-                    VALUES (%s, %s, %s)
-                    RETURNING id
-                    """,
-                    (ingestion_run_id, company, source),
+        with open_cursor(self.database_url) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO source_runs (
+                    ingestion_run_id,
+                    company,
+                    source
                 )
-                return cursor.fetchone()[0]
+                VALUES (%s, %s, %s)
+                RETURNING id
+                """,
+                (ingestion_run_id, company, source),
+            )
+            return cursor.fetchone()[0]
 
     def finish_source_run(
         self,
@@ -129,42 +117,39 @@ class RunRepository:
         error_type: str | None = None,
         error_message: str | None = None,
     ) -> None:
-        with self._connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE source_runs
-                    SET finished_at = CURRENT_TIMESTAMP,
-                        status = %s,
-                        jobs_seen = %s,
-                        jobs_new = %s,
-                        jobs_closed = %s,
-                        matches = %s,
-                        duration_ms = %s,
-                        snapshot_status = %s,
-                        closure_suppressed = %s,
-                        error_type = %s,
-                        error_message = %s
-                    WHERE id = %s
-                    """,
-                    (
-                        status,
-                        jobs_seen,
-                        jobs_new,
-                        jobs_closed,
-                        matches,
-                        duration_ms,
-                        snapshot_status,
-                        closure_suppressed,
-                        error_type,
-                        error_message,
-                        source_run_id,
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    raise ValueError(
-                        f"source_run inexistente: {source_run_id}"
-                    )
+        with open_cursor(self.database_url) as cursor:
+            cursor.execute(
+                """
+                UPDATE source_runs
+                SET finished_at = CURRENT_TIMESTAMP,
+                    status = %s,
+                    jobs_seen = %s,
+                    jobs_new = %s,
+                    jobs_closed = %s,
+                    matches = %s,
+                    duration_ms = %s,
+                    snapshot_status = %s,
+                    closure_suppressed = %s,
+                    error_type = %s,
+                    error_message = %s
+                WHERE id = %s
+                """,
+                (
+                    status,
+                    jobs_seen,
+                    jobs_new,
+                    jobs_closed,
+                    matches,
+                    duration_ms,
+                    snapshot_status,
+                    closure_suppressed,
+                    error_type,
+                    error_message,
+                    source_run_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"source_run inexistente: {source_run_id}")
 
     def get_source_snapshot_history(
         self,
@@ -176,32 +161,31 @@ class RunRepository:
         if limit <= 0:
             return []
 
-        with self._connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT
-                        jobs_seen,
-                        snapshot_status,
-                        closure_suppressed
-                    FROM source_runs
-                    WHERE company = %s
-                      AND source = %s
-                      AND status = 'success'
-                      AND finished_at IS NOT NULL
-                    ORDER BY started_at DESC, id DESC
-                    LIMIT %s
-                    """,
-                    (company, source, limit),
+        with open_cursor(self.database_url) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    jobs_seen,
+                    snapshot_status,
+                    closure_suppressed
+                FROM source_runs
+                WHERE company = %s
+                  AND source = %s
+                  AND status = 'success'
+                  AND finished_at IS NOT NULL
+                ORDER BY started_at DESC, id DESC
+                LIMIT %s
+                """,
+                (company, source, limit),
+            )
+            return [
+                SourceSnapshot(
+                    jobs_seen=row[0],
+                    snapshot_status=row[1],
+                    closure_suppressed=row[2],
                 )
-                return [
-                    SourceSnapshot(
-                        jobs_seen=row[0],
-                        snapshot_status=row[1],
-                        closure_suppressed=row[2],
-                    )
-                    for row in cursor.fetchall()
-                ]
+                for row in cursor.fetchall()
+            ]
 
     def get_recent_source_runs(
         self,
@@ -212,44 +196,45 @@ class RunRepository:
         if limit <= 0:
             return {}
 
-        with self._connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
+        with open_cursor(self.database_url) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    company,
+                    source,
+                    status,
+                    finished_at,
+                    error_type,
+                    error_message,
+                    snapshot_status
+                FROM (
                     SELECT
                         company,
                         source,
                         status,
                         finished_at,
                         error_type,
-                        error_message
-                    FROM (
-                        SELECT
-                            company,
-                            source,
-                            status,
-                            finished_at,
-                            error_type,
-                            error_message,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY company, source
-                                ORDER BY started_at DESC, id DESC
-                            ) AS position,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY company, source, status
-                                ORDER BY started_at DESC, id DESC
-                            ) AS status_position
-                        FROM source_runs
-                        WHERE
-                            finished_at IS NOT NULL
-                            AND status IN ('success', 'failed')
-                    ) AS recent
-                    WHERE position <= %s OR status_position = 1
-                    ORDER BY company, source, position
-                    """,
-                    (limit,),
-                )
-                rows = cursor.fetchall()
+                        error_message,
+                        snapshot_status,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY company, source
+                            ORDER BY started_at DESC, id DESC
+                        ) AS position,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY company, source, status
+                            ORDER BY started_at DESC, id DESC
+                        ) AS status_position
+                    FROM source_runs
+                    WHERE
+                        finished_at IS NOT NULL
+                        AND status IN ('success', 'failed')
+                ) AS recent
+                WHERE position <= %s OR status_position = 1
+                ORDER BY company, source, position
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
 
         histories: dict[tuple[str, str], list[SourceRunRecord]] = {}
         for row in rows:
@@ -260,6 +245,7 @@ class RunRepository:
                 finished_at=row[3],
                 error_type=row[4],
                 error_message=row[5],
+                snapshot_status=row[6],
             )
             histories.setdefault(
                 (record.company, record.source), []

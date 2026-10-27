@@ -1,3 +1,4 @@
+import hashlib
 import io
 import os
 import tempfile
@@ -5,6 +6,7 @@ import unittest
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     import psycopg
@@ -414,3 +416,119 @@ class MigrationTests(unittest.TestCase):
                     self.database_url,
                     self.migrations_directory,
                 )
+
+
+class MigrationDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        self.directory = Path(temporary_directory.name)
+
+    def write(self, name, contents):
+        (self.directory / name).write_bytes(contents)
+
+    def test_checksum_is_sha256_of_file_bytes_in_numeric_order(self):
+        self.write("010_later.sql", b"SELECT 10;\r\n")
+        self.write("002_second.sql", "-- ñ\nSELECT 2;\n".encode())
+
+        discovered = migrations.discover_migrations(self.directory)
+
+        self.assertEqual(
+            [migration.filename for migration in discovered],
+            ["002_second.sql", "010_later.sql"],
+        )
+        self.assertEqual(
+            [migration.version_label for migration in discovered],
+            ["002", "010"],
+        )
+        self.assertEqual(
+            discovered[1].checksum,
+            hashlib.sha256(b"SELECT 10;\r\n").hexdigest(),
+        )
+        self.assertEqual(discovered[1].sql, "SELECT 10;\r\n")
+
+    def test_invalid_migration_sets_are_rejected(self):
+        cases = {
+            "no se encontraron": {},
+            "nombre de migración inválido": {"1-bad.sql": b"SELECT 1;"},
+            "duplicada": {"001_a.sql": b"SELECT 1;", "01_b.sql": b"SELECT 1;"},
+            "no es UTF-8": {"001_a.sql": b"\xff\xfe"},
+        }
+
+        for expected, files in cases.items():
+            with self.subTest(expected=expected):
+                for path in self.directory.glob("*.sql"):
+                    path.unlink()
+                for name, contents in files.items():
+                    self.write(name, contents)
+
+                with self.assertRaisesRegex(
+                    migrations.MigrationDefinitionError,
+                    expected,
+                ):
+                    migrations.discover_migrations(self.directory)
+
+    def test_project_migrations_form_a_contiguous_sequence(self):
+        discovered = migrations.discover_migrations(PROJECT_MIGRATIONS)
+
+        self.assertEqual(
+            [migration.version for migration in discovered],
+            list(range(1, len(discovered) + 1)),
+        )
+
+
+class MigrationCommandWithoutDatabaseTests(unittest.TestCase):
+    def run_main(self, argv, database_url="postgresql://test"):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(errors):
+            result = migrations.main(
+                argv,
+                database_url=database_url,
+                migrations_directory=PROJECT_MIGRATIONS,
+            )
+        return result, output.getvalue(), errors.getvalue()
+
+    def test_requires_database_url(self):
+        with patch.dict(os.environ, {"DATABASE_URL": ""}):
+            result, _output, errors = self.run_main([], database_url=None)
+
+        self.assertEqual(result, 2)
+        self.assertIn("DATABASE_URL no está configurada", errors)
+
+    def test_confirm_requires_baseline(self):
+        with self.assertRaises(SystemExit) as raised:
+            self.run_main(["--confirm-baseline"])
+
+        self.assertEqual(raised.exception.code, 2)
+
+    @unittest.skipIf(psycopg is None, "psycopg no instalado")
+    def test_unconfirmed_baseline_only_prints_plan(self):
+        with patch("psycopg.connect") as connect:
+            result, output, errors = self.run_main(["--baseline", "002"])
+
+        self.assertEqual(result, 2)
+        connect.assert_not_called()
+        self.assertEqual(
+            output.splitlines(),
+            [
+                "El baseline registrará sin ejecutar SQL:",
+                "BASELINE 001_create_jobs.sql",
+                "BASELINE 002_add_job_lifecycle.sql",
+            ],
+        )
+        self.assertIn("--confirm-baseline", errors)
+
+    @unittest.skipIf(psycopg is None, "psycopg no instalado")
+    def test_unknown_baseline_is_rejected_before_printing_plan(self):
+        with patch("psycopg.connect") as connect:
+            result, output, errors = self.run_main(["--baseline", "999"])
+
+        self.assertEqual(result, 1)
+        connect.assert_not_called()
+        self.assertEqual(output, "")
+        self.assertIn("no corresponde a una migración local", errors)
+
+
+if __name__ == "__main__":
+    unittest.main()

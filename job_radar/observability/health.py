@@ -1,8 +1,9 @@
 """Connector health derived from recent source run history."""
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import takewhile
 from typing import Literal, Protocol
 
 from job_radar.storage.runs import SourceRunRecord
@@ -10,6 +11,10 @@ from job_radar.storage.runs import SourceRunRecord
 HEALTH_WINDOW = 10
 HEALTHY_SUCCESS_RATE = 0.90
 UNHEALTHY_SUCCESS_RATE = 0.70
+# Un snapshot vacío termina con status=success: no es un fallo de ejecución
+# y no altera health_status. Repetido, suele indicar que la empresa cambió de
+# ATS o de slug, así que se avisa como señal aparte (3 ejecuciones ≈ 6 días).
+PERSISTENT_EMPTY_SNAPSHOT_RUNS = 3
 
 HealthStatus = Literal["healthy", "degraded", "unhealthy", "unknown"]
 SourceKey = tuple[str, str]
@@ -35,6 +40,14 @@ class SourceHealth:
     last_failure_at: datetime | None
     last_error_type: str | None
     last_error_message: str | None
+    consecutive_empty_snapshots: int = 0
+
+
+def _leading_count(
+    runs: Iterable[SourceRunRecord],
+    predicate: Callable[[SourceRunRecord], bool],
+) -> int:
+    return sum(1 for _run in takewhile(predicate, runs))
 
 
 def calculate_source_health(
@@ -50,11 +63,13 @@ def calculate_source_health(
     successful_runs = sum(run.status == "success" for run in recent)
     success_rate = successful_runs / recent_runs if recent_runs else None
 
-    consecutive_failures = 0
-    for run in recent:
-        if run.status != "failed":
-            break
-        consecutive_failures += 1
+    consecutive_failures = _leading_count(
+        recent, lambda run: run.status == "failed"
+    )
+    consecutive_empty_snapshots = _leading_count(
+        recent,
+        lambda run: run.status == "success" and run.snapshot_status == "empty",
+    )
 
     last_success = next((run for run in runs if run.status == "success"), None)
     last_failure = next((run for run in runs if run.status == "failed"), None)
@@ -83,6 +98,7 @@ def calculate_source_health(
         last_failure_at=last_failure.finished_at if last_failure else None,
         last_error_type=last_failure.error_type if last_failure else None,
         last_error_message=last_failure.error_message if last_failure else None,
+        consecutive_empty_snapshots=consecutive_empty_snapshots,
     )
 
 
@@ -113,6 +129,11 @@ def violates_required_slo(health: SourceHealth) -> bool:
         and health.success_rate is not None
         and health.success_rate < HEALTHY_SUCCESS_RATE
     )
+
+
+def has_persistent_empty_snapshot(health: SourceHealth) -> bool:
+    """Return whether the latest runs all succeeded with an empty snapshot."""
+    return health.consecutive_empty_snapshots >= PERSISTENT_EMPTY_SNAPSHOT_RUNS
 
 
 def required_slo_breaches(

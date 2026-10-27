@@ -1,6 +1,8 @@
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
 
 try:
     import psycopg
@@ -20,6 +22,7 @@ from job_radar.storage.migrations import apply_pending
 
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+POSTGRES_LOGGER = "job_radar.storage.postgres"
 COMPANY = "Lifecycle Test Company"
 SOURCE = "test:connector"
 
@@ -354,6 +357,194 @@ class LifecycleTests(unittest.TestCase):
                         ["PREPARED_REASON"],
                     ),
                 )
+
+
+
+class FakeCursor:
+    """Cursor that returns scripted ``(rows, rowcount)`` per statement."""
+
+    def __init__(self, *results, columns=()):
+        self.results = list(results)
+        self.description = [SimpleNamespace(name=name) for name in columns]
+        self.statements = []
+        self.rows = []
+        self.rowcount = -1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def cursor(self):
+        return self
+
+    def _next_result(self):
+        rows, self.rowcount = self.results.pop(0) if self.results else ([], -1)
+        self.rows = list(rows)
+
+    def execute(self, statement, parameters=None):
+        self.statements.append((" ".join(statement.split()), parameters))
+        self._next_result()
+
+    def executemany(self, statement, parameters):
+        self.statements.append((" ".join(statement.split()), list(parameters)))
+        self._next_result()
+
+    def fetchall(self):
+        rows, self.rows = self.rows, []
+        return rows
+
+
+@unittest.skipIf(psycopg is None, "psycopg no instalado")
+class LifecycleWithoutDatabaseTests(unittest.TestCase):
+    def make_job(self, job_id, source=SOURCE):
+        return Job(
+            source=source,
+            source_job_id=job_id,
+            company=COMPANY,
+            title="Junior Data Engineer",
+            location="Madrid, Spain",
+            url=f"https://example.com/jobs/{job_id}",
+            description="Python, SQL and data pipelines",
+            salary_text=None,
+            experience_text="2 years of experience",
+        )
+
+    def test_empty_snapshot_returns_without_connecting(self):
+        with patch("psycopg.connect") as connect:
+            with self.assertLogs(POSTGRES_LOGGER, "WARNING") as logs:
+                result = save_jobs([], COMPANY)
+
+        self.assertEqual(result, (0, 0))
+        connect.assert_not_called()
+        self.assertIn("empty_snapshot_protected", logs.output[0])
+
+    def test_snapshot_with_several_sources_is_rejected(self):
+        jobs = prepare_jobs(
+            self.make_job("job-1"),
+            self.make_job("job-2", source="other:connector"),
+        )
+
+        with patch("psycopg.connect") as connect:
+            with self.assertRaisesRegex(ValueError, "varias fuentes"):
+                save_jobs(jobs, COMPANY)
+
+        connect.assert_not_called()
+
+    def test_upsert_counts_new_ids_and_closes_missing_except_kept(self):
+        cursor = FakeCursor(
+            ([("job-1",), ("job-old",)], 2),
+            ([], 2),
+            ([], 3),
+        )
+
+        environment = {"DATABASE_URL": "postgresql://lifecycle"}
+
+        with patch.dict(os.environ, environment):
+            with patch("psycopg.connect", return_value=cursor) as connect:
+                result = save_jobs(
+                    prepare_jobs(
+                        self.make_job("job-1"),
+                        self.make_job("job-2"),
+                    ),
+                    COMPANY,
+                    keep_ids={"job-detail-failed"},
+                )
+
+        self.assertEqual(result, (1, 3))
+        connect.assert_called_once_with(
+            "postgresql://lifecycle",
+            connect_timeout=10,
+        )
+        select, upsert, close = cursor.statements
+        self.assertEqual(select[1], (COMPANY, SOURCE))
+        self.assertTrue(upsert[0].startswith("INSERT INTO jobs"))
+        self.assertEqual(
+            [row[:2] for row in upsert[1]],
+            [(SOURCE, "job-1"), (SOURCE, "job-2")],
+        )
+        self.assertTrue(close[0].startswith("UPDATE jobs SET active = FALSE"))
+        self.assertEqual(close[1][:2], (COMPANY, SOURCE))
+        self.assertEqual(
+            sorted(close[1][2]),
+            ["job-1", "job-2", "job-detail-failed"],
+        )
+
+    def test_suppressed_closures_only_upsert(self):
+        cursor = FakeCursor(([], 0), ([], 1))
+
+        with patch("psycopg.connect", return_value=cursor):
+            result = save_jobs(
+                prepare_jobs(self.make_job("job-1")),
+                COMPANY,
+                close_missing=False,
+            )
+
+        self.assertEqual(result, (1, 0))
+        self.assertEqual(len(cursor.statements), 2)
+
+    def test_upsert_row_contains_prepared_values_in_column_order(self):
+        prepared = PreparedJob(
+            job=self.make_job("job-1"),
+            countries=("Spain",),
+            selected=True,
+            match_status="Stretch",
+            match_reason="human reason",
+            match_rules_version=7,
+            match_reason_codes=("CODE",),
+        )
+        rejected = PreparedJob(
+            job=self.make_job("job-2"),
+            countries=(),
+            selected=False,
+            match_status=None,
+            match_reason=None,
+            match_rules_version=None,
+            match_reason_codes=None,
+        )
+        cursor = FakeCursor()
+
+        with patch("psycopg.connect", return_value=cursor):
+            save_jobs([prepared, rejected], COMPANY, close_missing=False)
+
+        job = prepared.job
+        self.assertEqual(
+            cursor.statements[1][1],
+            [
+                (
+                    SOURCE, "job-1", COMPANY, job.title, job.location,
+                    ["Spain"], job.url, job.description, None,
+                    job.experience_text, True, "Stretch", "human reason",
+                    7, ["CODE"],
+                ),
+                (
+                    SOURCE, "job-2", COMPANY, job.title, job.location,
+                    [], rejected.job.url, job.description, None,
+                    job.experience_text, False, None, None, None, None,
+                ),
+            ],
+        )
+
+    def test_active_matches_drop_stale_rows_and_freshness_column(self):
+        cursor = FakeCursor(
+            ([("Fresh", True), ("Stale", False), ("Unknown", None)], 3),
+            columns=("company", "fresh"),
+        )
+
+        with patch("psycopg.connect", return_value=cursor):
+            with self.assertLogs(POSTGRES_LOGGER, "WARNING") as logs:
+                matches = get_active_matches()
+
+        self.assertEqual(matches, [{"company": "Fresh"}])
+        self.assertEqual(cursor.statements[0][1], (STALE_AFTER_DAYS,))
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:job_radar.storage.postgres:stale_matches_hidden "
+                f"count=2 stale_after_days={STALE_AFTER_DAYS}",
+            ],
+        )
 
 
 if __name__ == "__main__":
