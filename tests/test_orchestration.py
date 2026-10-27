@@ -413,6 +413,134 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(repository.ingestion_finish["status"], "failed")
 
+    @patch("job_radar.orchestration.runner.send_match_notification")
+    @patch("job_radar.orchestration.runner.save_jobs", return_value=(1, 0))
+    @patch(
+        "job_radar.orchestration.runner.time.perf_counter",
+        side_effect=[1.0, 1.05, 2.0, 2.2],
+    )
+    def test_source_run_finished_log_lines_are_stable(
+        self,
+        _perf_counter,
+        _save_jobs,
+        _send_match_notification,
+    ):
+        repository = RecordingRunRepository()
+        failed = StubConnector(error=ValueError("broken snapshot"))
+        successful = StubConnector(company="Second source")
+
+        with patch.object(runner, "CONNECTORS", (failed, successful)):
+            with self.assertLogs(runner.LOGGER, level="INFO") as logs:
+                runner.run(repository)
+
+        self.assertIn(
+            "ERROR:job_radar.orchestration.runner:source_run_finished "
+            "run_id=100 source_run_id=200 company='Example' source=stub "
+            "jobs_seen=0 jobs_new=0 jobs_closed=0 matches=0 duration_ms=50 "
+            "status=failed snapshot_status=unknown closure_suppressed=False "
+            "error_type=ValueError error_message='broken snapshot'",
+            logs.output,
+        )
+        self.assertIn(
+            "INFO:job_radar.orchestration.runner:source_run_finished "
+            "run_id=100 source_run_id=201 company='Second source' "
+            "source=stub jobs_seen=1 jobs_new=1 jobs_closed=0 matches=1 "
+            "duration_ms=200 status=success snapshot_status=healthy "
+            "closure_suppressed=False",
+            logs.output,
+        )
+
+    @patch("job_radar.orchestration.runner.send_match_notification")
+    def test_required_catch_all_failure_continues_but_blocks_exit(
+        self,
+        send_match_notification,
+    ):
+        repository = RecordingRunRepository()
+        connector = StubConnector(
+            catch_all=True,
+            error=RuntimeError("custom site changed"),
+        )
+
+        with patch.object(runner, "CONNECTORS", (connector,)):
+            with self.assertLogs(runner.LOGGER, level="INFO"):
+                exit_code = runner.run(repository)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(repository.ingestion_finish["status"], "partial")
+        self.assertEqual(
+            repository.source_finishes[0]["error_type"],
+            "RuntimeError",
+        )
+        send_match_notification.assert_called_once_with(
+            partial=True,
+            source_health=ANY,
+            new_since=ANY,
+        )
+
+    @patch(
+        "job_radar.orchestration.runner.send_match_notification",
+        side_effect=RuntimeError("resend unavailable"),
+    )
+    @patch("job_radar.orchestration.runner.save_jobs", return_value=(0, 0))
+    def test_notification_failure_is_logged_with_error_details(
+        self,
+        _save_jobs,
+        _send_match_notification,
+    ):
+        repository = RecordingRunRepository()
+
+        with patch.object(runner, "CONNECTORS", (StubConnector(),)):
+            with self.assertLogs(runner.LOGGER, level="INFO") as logs:
+                runner.run(repository)
+
+        self.assertIn(
+            "ERROR:job_radar.orchestration.runner:notification_failed "
+            "run_id=100 error_type=RuntimeError "
+            "error_message='resend unavailable'",
+            logs.output,
+        )
+
+    @patch("job_radar.orchestration.runner.send_match_notification")
+    @patch("job_radar.orchestration.runner.save_jobs", return_value=(0, 0))
+    def test_finalization_failure_is_logged_and_raised(
+        self,
+        _save_jobs,
+        _send_match_notification,
+    ):
+        repository = RecordingRunRepository()
+
+        def fail_finish(run_id, **values):
+            raise ValueError(f"ingestion_run inexistente: {run_id}")
+
+        repository.finish_ingestion_run = fail_finish
+
+        with patch.object(runner, "CONNECTORS", (StubConnector(),)):
+            with self.assertLogs(runner.LOGGER, level="INFO") as logs:
+                with self.assertRaisesRegex(ValueError, "inexistente"):
+                    runner.run(repository)
+
+        output = "\n".join(logs.output)
+        self.assertIn("ingestion_run_finalize_failed run_id=100", output)
+        self.assertNotIn("ingestion_run_finished", output)
+
+    @patch("job_radar.orchestration.runner.send_match_notification")
+    def test_fatal_error_wins_over_finalization_failure(
+        self,
+        _send_match_notification,
+    ):
+        repository = RecordingRunRepository()
+
+        def fail_finish(run_id, **values):
+            raise ValueError("database unavailable")
+
+        repository.finish_ingestion_run = fail_finish
+        connector = StubConnector(error=RuntimeError("unexpected"))
+
+        with patch.object(runner, "CONNECTORS", (connector,)):
+            with self.assertLogs(runner.LOGGER, level="INFO"):
+                with self.assertRaisesRegex(RuntimeError, "unexpected"):
+                    runner.run(repository)
+
 
 if __name__ == "__main__":
     unittest.main()

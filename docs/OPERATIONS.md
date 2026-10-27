@@ -129,9 +129,10 @@ producción.
 | `failed` | Hubo fallo de notificación o error fatal del pipeline. |
 
 Una fuente requerida fallida hace que el proceso termine con código 1 aunque
-el run sea `partial`. La única fuente opcional actual es Revolut: su fallo se
-registra y produce `partial`, pero el proceso puede terminar con 0. Consulta la
-semántica completa en [ARCHITECTURE.md](ARCHITECTURE.md#observabilidad-y-semántica-de-errores).
+el run sea `partial`. Una fuente opcional (`required=False`; ahora no hay
+ninguna configurada) que falla se registra y produce `partial`, pero el proceso
+puede terminar con 0. Consulta la semántica completa en
+[ARCHITECTURE.md](ARCHITECTURE.md#observabilidad-y-semántica-de-errores).
 
 ## Qué observar
 
@@ -177,6 +178,12 @@ proveedor externo— exige que cada fuente `required` tenga al menos 90 % de
 completa por debajo del 90 % o anticipadamente con dos fallos consecutivos.
 Una fuente opcional siempre queda fuera del incumplimiento global.
 
+Aparte del health, `consecutive_empty_snapshots` cuenta las ejecuciones
+correctas más recientes con snapshot `empty`. A partir de tres seguidas
+(`PERSISTENT_EMPTY_SNAPSHOT_RUNS`, unos seis días con el cron actual) se
+considera un snapshot vacío persistente: suele indicar que la empresa cambió
+de ATS o de slug. No altera `health_status` ni el SLO.
+
 Con `DATABASE_URL` configurada:
 
 ```bash
@@ -186,10 +193,11 @@ python3 scripts/source_health.py --check
 ```
 
 El primer comando lista todas las fuentes; `--problems` limita la salida a
-`degraded`/`unhealthy`; `--check` termina distinto de cero si una fuente
-`required` incumple el SLO. Tras cada ingesta, el correo existente incluye una
-sección compacta solo cuando hay fuentes `required` `unhealthy`; no se envía un
-segundo mensaje.
+`degraded`/`unhealthy` y a fuentes con snapshot vacío persistente; `--check`
+termina distinto de cero si una fuente `required` incumple el SLO. Tras cada
+ingesta, el correo existente incluye una sección compacta solo cuando hay
+fuentes `required` `unhealthy` o con snapshot vacío persistente; no se envía
+un segundo mensaje.
 
 ## Feedback de relevancia
 

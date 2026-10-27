@@ -109,22 +109,17 @@ def _format_report(
         lines.extend(["", "Sin feedback registrado."])
         return "\n".join(lines)
 
-    lines.extend(
-        _format_breakdown(
-            "By rules version",
-            report.by_rules_version,
-            prefix="v",
-        )
-    )
-    lines.extend(
-        _format_breakdown("By match status", report.by_match_status)
-    )
-    lines.extend(
-        _format_breakdown(
+    breakdowns = (
+        ("By rules version", report.by_rules_version, "v"),
+        ("By match status", report.by_match_status, ""),
+        (
             "By reason code (más falsos positivos primero)",
             report.by_reason_code,
-        )
+            "",
+        ),
     )
+    for title, rows, prefix in breakdowns:
+        lines.extend(_format_breakdown(title, rows, prefix=prefix))
     return "\n".join(lines)
 
 

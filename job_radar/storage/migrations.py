@@ -1,11 +1,12 @@
 import argparse
 import hashlib
-import os
 import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from .connection import connect, resolve_database_url
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +23,17 @@ CREATE_TRACKING_TABLE = """
         applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
 """
+INSERT_APPLIED_MIGRATION = """
+    INSERT INTO schema_migrations (
+        version,
+        filename,
+        checksum
+    )
+    VALUES (%s, %s, %s)
+"""
+UNTRACKED_SCHEMA_MESSAGE = (
+    "schema con tablas y sin historial; verifica si necesita baseline."
+)
 
 
 class MigrationError(Exception):
@@ -174,6 +186,13 @@ def _create_tracking_table(connection) -> None:
         cursor.execute(CREATE_TRACKING_TABLE)
 
 
+def _record_applied(cursor, migration: Migration) -> None:
+    cursor.execute(
+        INSERT_APPLIED_MIGRATION,
+        (migration.version, migration.filename, migration.checksum),
+    )
+
+
 def _load_applied(connection) -> dict[int, AppliedMigration]:
     if not _tracking_table_exists(connection):
         return {}
@@ -245,13 +264,8 @@ def _validate_history(
 
 
 def _connect(database_url: str):
-    import psycopg
-
-    return psycopg.connect(
-        database_url,
-        autocommit=True,
-        connect_timeout=10,
-    )
+    # Cada migración gestiona su propia transacción explícita.
+    return connect(database_url, autocommit=True)
 
 
 def inspect_database(
@@ -312,21 +326,7 @@ def apply_pending(
             with connection.transaction():
                 with connection.cursor() as cursor:
                     cursor.execute(migration.sql)
-                    cursor.execute(
-                        """
-                        INSERT INTO schema_migrations (
-                            version,
-                            filename,
-                            checksum
-                        )
-                        VALUES (%s, %s, %s)
-                        """,
-                        (
-                            migration.version,
-                            migration.filename,
-                            migration.checksum,
-                        ),
-                    )
+                    _record_applied(cursor, migration)
 
         return pending
 
@@ -366,21 +366,7 @@ def baseline(
 
             with connection.cursor() as cursor:
                 for migration in selected:
-                    cursor.execute(
-                        """
-                        INSERT INTO schema_migrations (
-                            version,
-                            filename,
-                            checksum
-                        )
-                        VALUES (%s, %s, %s)
-                        """,
-                        (
-                            migration.version,
-                            migration.filename,
-                            migration.checksum,
-                        ),
-                    )
+                    _record_applied(cursor, migration)
 
         return selected
 
@@ -409,6 +395,87 @@ def _baseline_plan(
         for migration in migrations
         if migration.version <= target_migration.version
     )
+
+
+def _run_baseline(
+    database_url: str,
+    target: str,
+    *,
+    confirmed: bool,
+    migrations_directory: Path,
+) -> int:
+    planned = _baseline_plan(target, migrations_directory)
+    print("El baseline registrará sin ejecutar SQL:")
+
+    for migration in planned:
+        print(f"BASELINE {migration.filename}")
+
+    if not confirmed:
+        print(
+            "ERROR: revisa el schema y repite con --confirm-baseline",
+            file=sys.stderr,
+        )
+        return 2
+
+    recorded = baseline(
+        database_url,
+        target,
+        confirmed=True,
+        migrations_directory=migrations_directory,
+    )
+    print(f"Baseline registrado: {len(recorded)} migraciones.")
+    return 0
+
+
+def _print_status(state: DatabaseMigrationState) -> int:
+    for status in state.statuses:
+        if status.applied is None:
+            print(f"PENDING {status.migration.filename}")
+        else:
+            applied_at = status.applied.applied_at.isoformat()
+            print(
+                f"APPLIED {status.migration.filename} "
+                f"applied_at={applied_at}"
+            )
+
+    if state.has_untracked_tables:
+        print(f"WARNING: {UNTRACKED_SCHEMA_MESSAGE}", file=sys.stderr)
+
+    return 0
+
+
+def _check_state(state: DatabaseMigrationState) -> int:
+    if state.has_untracked_tables:
+        print(f"ERROR: {UNTRACKED_SCHEMA_MESSAGE}", file=sys.stderr)
+        return 1
+
+    pending = [
+        status.migration.filename
+        for status in state.statuses
+        if status.applied is None
+    ]
+
+    if pending:
+        print(
+            "ERROR: migraciones pendientes: " + ", ".join(pending),
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"OK: {len(state.statuses)} migraciones aplicadas.")
+    return 0
+
+
+def _apply(database_url: str, migrations_directory: Path) -> int:
+    applied = apply_pending(database_url, migrations_directory)
+
+    if not applied:
+        print("No hay migraciones pendientes.")
+
+    for migration in applied:
+        print(f"APPLIED {migration.filename}")
+
+    return 0
 
 
 def main(
@@ -446,11 +513,7 @@ def main(
     if args.confirm_baseline and args.baseline is None:
         parser.error("--confirm-baseline requiere --baseline")
 
-    resolved_database_url = (
-        database_url
-        if database_url is not None
-        else os.getenv("DATABASE_URL", "")
-    )
+    resolved_database_url = resolve_database_url(database_url)
 
     if not resolved_database_url:
         print("ERROR: DATABASE_URL no está configurada", file=sys.stderr)
@@ -464,100 +527,29 @@ def main(
 
     try:
         if args.baseline is not None:
-            planned = _baseline_plan(
-                args.baseline,
-                migrations_directory,
-            )
-            print("El baseline registrará sin ejecutar SQL:")
-
-            for migration in planned:
-                print(f"BASELINE {migration.filename}")
-
-            if not args.confirm_baseline:
-                print(
-                    "ERROR: revisa el schema y repite con "
-                    "--confirm-baseline",
-                    file=sys.stderr,
-                )
-                return 2
-
-            recorded = baseline(
+            return _run_baseline(
                 resolved_database_url,
                 args.baseline,
-                confirmed=True,
+                confirmed=args.confirm_baseline,
                 migrations_directory=migrations_directory,
             )
-            print(f"Baseline registrado: {len(recorded)} migraciones.")
-            return 0
 
         if args.status or args.check:
             state = inspect_database(
                 resolved_database_url,
                 migrations_directory,
             )
+            return _print_status(state) if args.status else _check_state(state)
 
-            if args.status:
-                for status in state.statuses:
-                    if status.applied is None:
-                        print(f"PENDING {status.migration.filename}")
-                    else:
-                        applied_at = status.applied.applied_at.isoformat()
-                        print(
-                            f"APPLIED {status.migration.filename} "
-                            f"applied_at={applied_at}"
-                        )
-
-                if state.has_untracked_tables:
-                    print(
-                        "WARNING: schema con tablas y sin historial; "
-                        "verifica si necesita baseline.",
-                        file=sys.stderr,
-                    )
-
-                return 0
-
-            pending = [
-                status.migration.filename
-                for status in state.statuses
-                if status.applied is None
-            ]
-
-            if state.has_untracked_tables:
-                print(
-                    "ERROR: schema con tablas y sin historial; "
-                    "verifica si necesita baseline.",
-                    file=sys.stderr,
-                )
-                return 1
-
-            if pending:
-                print(
-                    "ERROR: migraciones pendientes: " + ", ".join(pending),
-                    file=sys.stderr,
-                )
-                return 1
-
-            print(f"OK: {len(state.statuses)} migraciones aplicadas.")
-            return 0
-
-        applied = apply_pending(
-            resolved_database_url,
-            migrations_directory,
-        )
-
-        if not applied:
-            print("No hay migraciones pendientes.")
-            return 0
-
-        for migration in applied:
-            print(f"APPLIED {migration.filename}")
-
-        return 0
+        return _apply(resolved_database_url, migrations_directory)
     except MigrationError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     except OSError as error:
-        print(f"ERROR: no se pudieron leer las migraciones: {error}", file=sys.stderr)
+        print(
+            f"ERROR: no se pudieron leer las migraciones: {error}",
+            file=sys.stderr,
+        )
         return 1
     except psycopg.Error as error:
         print(f"ERROR PostgreSQL: {error}", file=sys.stderr)

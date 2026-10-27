@@ -94,23 +94,25 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
     )
     args = parser.parse_args(argv)
 
+    # parser.error() no retorna, pero CodeQL no lo sabe: sin esta
+    # inicialización marca "changes" como posiblemente no inicializada.
     changes: list[Path] = []
     try:
         changes = update_documents(root, check=args.check)
     except (OSError, ValueError) as error:
         parser.error(str(error))
 
-    if args.check and changes:
-        paths = ", ".join(str(path) for path in changes)
+    if not changes:
+        print("Catálogo de fuentes actualizado.")
+        return 0
+
+    paths = ", ".join(str(path) for path in changes)
+
+    if args.check:
         print(f"Catálogo de fuentes desactualizado: {paths}", file=sys.stderr)
         return 1
 
-    if changes:
-        paths = ", ".join(str(path) for path in changes)
-        print(f"Catálogo de fuentes actualizado: {paths}")
-    else:
-        print("Catálogo de fuentes actualizado.")
-
+    print(f"Catálogo de fuentes actualizado: {paths}")
     return 0
 
 

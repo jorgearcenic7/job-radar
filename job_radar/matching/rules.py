@@ -6,7 +6,7 @@ from enum import StrEnum
 from job_radar.domain import Job
 
 
-MATCH_RULES_VERSION = 1
+MATCH_RULES_VERSION = 2
 
 
 class MatchReasonCode(StrEnum):
@@ -33,12 +33,27 @@ class MatchResult:
     rules_version: int
 
 
-_COUNTRY_ALIASES = None
-_CITY_COUNTRIES = None
-
-
 def normalize(text):
     return re.sub(r"\s+", " ", (text or "").casefold()).strip()
+
+
+# =========================================================
+# UBICACIÓN
+# =========================================================
+
+_SPAIN = re.compile(r"\b(?:spain|españa)\b")
+_REMOTE = re.compile(
+    r"\b(?:remote|remotely|remoto|remota|teletrabajo|distributed|anywhere|"
+    r"work from (?:anywhere|home))\b"
+)
+_OPEN_TO_EUROPE = re.compile(r"\b(?:europe|europa|european union|eu|emea)\b")
+# infer_countries no detecta "Remote - US" porque solo reconoce códigos
+# separados por comas o paréntesis.
+_RESTRICTED_REGION = re.compile(
+    r"(?<![a-z])(?:us|usa|u\.s\.(?:a\.)?|united states|canada|"
+    r"latam|latin america|americas|north america|south america|"
+    r"apac|asia|india)(?![a-z])"
+)
 
 
 def matches_target_location(location):
@@ -49,150 +64,224 @@ def matches_target_location(location):
 
     # España en cualquier parte, también en ubicaciones múltiples:
     # "Madrid, Spain; Remote - US"
-    if re.search(r"\b(?:spain|españa)\b", value):
+    if _SPAIN.search(value):
         return True
 
-    location_parts = {
-        normalize(part)
-        for part in re.split(r"[,/()]", value)
-        if part.strip()
-    }
-
-    if "es" in location_parts or "esp" in location_parts:
-        return True
-
+    # Los códigos ES/ESP los resuelve infer_countries, que además descarta
+    # un "ES" regional junto a otro país ("Vitória, ES, Brazil").
     countries = infer_countries(location)
 
     if "Spain" in countries:
         return True
 
-    remote = re.search(
-        r"\b("
-        r"remote|remotely|remoto|remota|"
-        r"teletrabajo|distributed|anywhere|"
-        r"work from (?:anywhere|home)"
-        r")\b",
-        value,
-    )
-
-    if not remote:
+    if not _REMOTE.search(value):
         return False
 
     # Remoto abierto a una región que incluye España.
-    open_to_europe = re.search(
-        r"\b("
-        r"europe|europa|european union|"
-        r"eu|emea"
-        r")\b",
-        value,
-    )
-
-    if open_to_europe:
+    if _OPEN_TO_EUROPE.search(value):
         return True
 
-    # Remoto limitado a otro país.
+    # Remoto limitado a otro país o a una región sin España.
     if countries:
         return False
 
-    # Remoto limitado a un país o región que no incluye España.
-    # infer_countries no detecta "Remote - US" porque solo
-    # reconoce códigos separados por comas o paréntesis.
-    restricted = re.search(
-        r"(?<![a-z])("
-        r"us|usa|u\.s\.(?:a\.)?|united states|"
-        r"canada|"
-        r"latam|latin america|americas|"
-        r"north america|south america|"
-        r"apac|asia|india"
-        r")(?![a-z])",
-        value,
+    return not _RESTRICTED_REGION.search(value)
+
+
+# =========================================================
+# SALARIO
+# =========================================================
+
+# El prefijo de país se conserva ("R$900", "CA$120,000"): sin él, el texto
+# devuelto atribuiría la cifra a otra moneda.
+_CURRENCY = (
+    r"(?:€|(?:USD|US|CAD|CA|AUD|AU|NZ|HK|SG|R|A|C|S)?\$|£|"
+    r"EUR\b|USD\b|GBP\b)"
+)
+_AMOUNT = (
+    r"(?:"
+    r"\d{1,3}(?:[.,   ]\d{3})+|"
+    r"\d{4,6}|"
+    r"\d{1,3}(?:[.,]\d{1,2})?\s?[kK]|"
+    r"\d{2,3}"
+    r")"
+)
+_SALARY_VALUE = rf"(?:{_CURRENCY}\s*)?{_AMOUNT}(?:\s*{_CURRENCY})?"
+_SALARY_PERIOD = (
+    r"(?:\s*(?:"
+    r"/(?:year|yr|annum|month|mo|hour|hr|day|week)|"
+    r"per\s+(?:year|annum|month|hour|day|week)|"
+    r"a\s+year|annually|yearly|monthly|weekly|daily|hourly|"
+    r"p\.?\s*a\.?)"
+    r")?"
+)
+_SALARY_RANGE = re.compile(
+    rf"(?<![\w.,]){_SALARY_VALUE}(?![\d.,])\s*(?:[-–—]|\bto\b)\s*"
+    rf"{_SALARY_VALUE}(?![\d.,]){_SALARY_PERIOD}(?!\w)",
+    re.IGNORECASE,
+)
+_SALARY_SINGLE = re.compile(
+    rf"(?<![\w.,]){_SALARY_VALUE}(?![\d.,]){_SALARY_PERIOD}(?!\w)",
+    re.IGNORECASE,
+)
+_HAS_CURRENCY = re.compile(_CURRENCY, re.IGNORECASE)
+
+# Palabras que, junto a una cifra con moneda, indican que no es el salario:
+# ventajas ("home office setup budget up to €1,000", "Meal Card: R$900"),
+# topes legales ("$6,800 monthly wage ceiling") o datos de negocio
+# ("$250 - $1B revenue"). "Budget:" como etiqueta sí anuncia el salario.
+_NON_SALARY_CONTEXT = re.compile(
+    r"\b(?:"
+    r"stipend|allowance|budget(?!\s*:)|set[- ]?up|home office|meal|card|"
+    r"voucher|reimburs\w*|revenue|funding|raised|valuation|ceiling|"
+    r"referral|gym|wellness|equipment"
+    r")\b",
+    re.IGNORECASE,
+)
+# Una etiqueta salarial justo antes de la cifra prevalece sobre el contexto
+# anterior: "Salary: £42,180 + Car Allowance £6,000".
+_SALARY_LABEL = re.compile(
+    r"\b(?:"
+    r"salary|pay|compensation|base|ote|rate|"
+    r"sueldo|salario|retribuci[oó]n|remuneraci[oó]n"
+    r")\b",
+    re.IGNORECASE,
+)
+_SALARY_CONTEXT_CHARS = 40
+_SENTENCE_BREAK = re.compile(r"[!?;\n•]|\.\s")
+_SALARY_INTERVAL = re.compile(
+    r"/\s*\w|\bper\b|\ba\s+year\b|"
+    r"\b(?:annually|yearly|monthly|weekly|daily|hourly)\b|"
+    r"\bp\.?\s*a\b",
+    re.IGNORECASE,
+)
+_THOUSANDS = re.compile(r"\d\s?k\b", re.IGNORECASE)
+
+
+def _in_non_salary_context(description, start, end):
+    """
+    Indica si la frase de la cifra habla de ventajas o de negocio sin una
+    etiqueta salarial justo antes.
+    """
+
+    before = description[max(0, start - _SALARY_CONTEXT_CHARS):start]
+    before = _SENTENCE_BREAK.split(before)[-1]
+    after = description[end:end + _SALARY_CONTEXT_CHARS]
+    after = _SENTENCE_BREAK.split(after)[0]
+
+    return not _SALARY_LABEL.search(before) and bool(
+        _NON_SALARY_CONTEXT.search(f"{before} {after}")
     )
 
-    return not restricted
+
+def _is_small_amount_without_interval(salary):
+    # Una cifra suelta de 2-3 dígitos sin periodo ("$500") no es un sueldo;
+    # con periodo sí lo es ("$25/hour", "$500/day").
+    if _SALARY_INTERVAL.search(salary) or _THOUSANDS.search(salary):
+        return False
+
+    return int(re.sub(r"\D", "", salary)) < 1000
 
 
 def extract_salary(description):
-    currency = r"(?:€|\$|£|EUR\b|USD\b|GBP\b)"
-    amount = (
-        r"(?:"
-        r"\d{1,3}(?:[., \u00a0\u202f]\d{3})+|"
-        r"\d{4,6}|"
-        r"\d{1,3}(?:[.,]\d{1,2})?\s?[kK]|"
-        r"\d{2,3}"
-        r")"
-    )
-    value = rf"(?:{currency}\s*)?{amount}(?:\s*{currency})?"
-    interval = (
-        r"(?:\s*(?:"
-        r"/(?:year|yr|annum|month|mo|hour|hr|day|week)|"
-        r"per\s+(?:year|annum|month|hour|day|week)|"
-        r"a\s+year|annually|yearly|monthly|weekly|daily|hourly|"
-        r"p\.?\s*a\.?)"
-        r")?"
-    )
-    range_pattern = (
-        rf"(?<![\d.,]){value}(?![\d.,])"
-        rf"\s*(?:[-–—]|\bto\b)\s*"
-        rf"{value}(?![\d.,]){interval}(?!\w)"
-    )
-    single_pattern = rf"(?<![\d.,]){value}(?![\d.,]){interval}(?!\w)"
+    description = description or ""
 
-    for pattern in (range_pattern, single_pattern):
-        for match in re.finditer(pattern, description or "", re.IGNORECASE):
+    for pattern in (_SALARY_RANGE, _SALARY_SINGLE):
+        for match in pattern.finditer(description):
             salary = match.group(0).strip()
 
-            if re.search(currency, salary, re.IGNORECASE):
-                return salary
+            if not _HAS_CURRENCY.search(salary):
+                continue
+
+            if _in_non_salary_context(description, match.start(), match.end()):
+                continue
+
+            if (
+                pattern is _SALARY_SINGLE
+                and _is_small_amount_without_interval(salary)
+            ):
+                continue
+
+            return salary
 
     return None
 
 
-def extract_experience(description):
-    patterns = [
-        (
-            r"\b(?:at least|minimum(?: of)?|min\.?)?\s*"
-            + r"\d{1,2}\+?\s+years?\s+(?:of\s+)?"
-            + r"(?:relevant\s+|professional\s+|hands-on\s+|industry\s+)?"
-            + r"experience\b"
-        ),
+# =========================================================
+# EXPERIENCIA
+# =========================================================
 
-        (
-            r"\b\d{1,2}\s*(?:-|–|—|to)\s*\d{1,2}\s+years?"
-            + r"\s+(?:of\s+)?(?:relevant\s+|professional\s+)?experience\b"
-        ),
-
+_EXPERIENCE_QUALIFIER = (
+    r"(?:relevant\s+|professional\s+|hands-on\s+|industry\s+)?"
+)
+_EXPERIENCE_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(?:at least|minimum(?: of)?|min\.?)?\s*"
+        r"\d{1,2}\+?\s+years?\s+(?:of\s+)?"
+        + _EXPERIENCE_QUALIFIER
+        + r"experience\b",
+        r"\b\d{1,2}\s*(?:-|–|—|to)\s*\d{1,2}\s+years?"
+        r"\s+(?:of\s+)?(?:relevant\s+|professional\s+)?experience\b",
         r"\b\d{1,2}\+?\s+years['’]?\s+experience\b",
+        r"\b(?:mínimo|minimo|al menos)?\s*"
+        r"\d{1,2}\+?\s+años?\s+de\s+experiencia\b",
+    )
+)
+# Más de 15 años no es un requisito plausible: suele ser la antigüedad de
+# la empresa.
+_MAX_PLAUSIBLE_YEARS = 15
+_COMPANY_CONTEXT_CHARS = 60
+_COMPANY_EXPERIENCE = re.compile(
+    r"\b(?:"
+    r"for over|founded|since|we have|we've|our|"
+    r"company|history|track record|"
+    r"nuestra|nuestro|empresa|trayectoria"
+    r")\b",
+    re.IGNORECASE,
+)
 
-        (
-            r"\b(?:mínimo|minimo|al menos)?\s*"
-            + r"\d{1,2}\+?\s+años?\s+de\s+experiencia\b"
-        ),
-    ]
+# El grupo 1 es el mínimo exigido; gana el primer patrón que coincida.
+_REQUIRED_YEARS_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        # "at least 3 years", "minimum of 3 years"
+        r"\b(?:at least|minimum(?: of)?|min\.?)\s*"
+        r"(\d{1,2})\+?\s*(?:years?|yrs?)\b",
+        # "3-5 years", "3 to 5 years"
+        r"\b(\d{1,2})\s*(?:-|–|—|to)\s*\d{1,2}\s*(?:years?|yrs?)\b",
+        # "7+ years"
+        r"\b(\d{1,2})\+\s*(?:years?|yrs?)\b",
+        # "2 years of experience", "5 years' experience"
+        r"\b(\d{1,2})\s*(?:years?|yrs?)['’]?\s+(?:of\s+)?"
+        + _EXPERIENCE_QUALIFIER
+        + r"experience\b",
+        # "mínimo 3 años de experiencia"
+        r"\b(?:mínimo|minimo|al menos)?\s*"
+        r"(\d{1,2})\+?\s*años?\s+de\s+experiencia\b",
+    )
+)
 
+
+def extract_experience(description):
     description = description or ""
 
     matches = sorted(
         (
             match
-            for pattern in patterns
-            for match in re.finditer(
-                pattern,
-                description,
-                re.IGNORECASE,
-            )
+            for pattern in _EXPERIENCE_PATTERNS
+            for match in pattern.finditer(description)
         ),
         key=lambda match: match.start(),
     )
 
     for match in matches:
-        if _is_company_experience(description, match.start()):
-            continue
-
-        # Más de 15 años no es un requisito plausible:
-        # suele ser la antigüedad de la empresa.
         years = int(re.search(r"\d{1,2}", match.group(0)).group(0))
 
-        if years > 15:
+        if years > _MAX_PLAUSIBLE_YEARS:
+            continue
+
+        if _is_company_experience(description, match.start()):
             continue
 
         return match.group(0).strip()
@@ -202,27 +291,16 @@ def extract_experience(description):
 
 def _is_company_experience(description, start):
     """
-    Detecta menciones de años que describen a la empresa,
-    no al candidato: "for over 20 years", "our track record"...
+    Detecta menciones de años que describen a la empresa, no al candidato:
+    "for over 20 years", "our track record"...
 
     Solo mira la frase actual dentro de los 60 caracteres previos.
     """
 
-    context = description[max(0, start - 60):start]
-    context = re.split(r"[.!?;\n•]", context)[-1]
+    context = description[max(0, start - _COMPANY_CONTEXT_CHARS):start]
+    sentence = re.split(r"[.!?;\n•]", context)[-1]
 
-    return bool(
-        re.search(
-            r"\b("
-            r"for over|founded|since|"
-            r"we have|we've|our|"
-            r"company|history|track record|"
-            r"nuestra|nuestro|empresa|trayectoria"
-            r")\b",
-            context,
-            re.IGNORECASE,
-        )
-    )
+    return bool(_COMPANY_EXPERIENCE.search(sentence))
 
 
 def required_experience_years(experience_text):
@@ -242,48 +320,91 @@ def required_experience_years(experience_text):
 
     value = normalize(experience_text)
 
-    patterns = [
-        # at least 3 years / minimum of 3 years
-        (
-            r"\b(?:at least|minimum(?: of)?|min\.?)\s*"
-            + r"(\d{1,2})\+?\s*(?:years?|yrs?)\b"
-        ),
-
-        # 3-5 years / 3 to 5 years
-        (
-            r"\b(\d{1,2})\s*(?:-|–|—|to)\s*"
-            + r"\d{1,2}\s*(?:years?|yrs?)\b"
-        ),
-
-        # 7+ years
-        r"\b(\d{1,2})\+\s*(?:years?|yrs?)\b",
-
-        # 2 years of experience / 5 years' experience
-        (
-            r"\b(\d{1,2})\s*(?:years?|yrs?)['’]?\s+"
-            + r"(?:of\s+)?"
-            + r"(?:relevant\s+|professional\s+|hands-on\s+|industry\s+)?"
-            + r"experience\b"
-        ),
-
-        # español
-        (
-            r"\b(?:mínimo|minimo|al menos)?\s*"
-            + r"(\d{1,2})\+?\s*años?\s+de\s+experiencia\b"
-        ),
-    ]
-
-    for pattern in patterns:
-        match = re.search(
-            pattern,
-            value,
-            re.IGNORECASE,
-        )
+    for pattern in _REQUIRED_YEARS_PATTERNS:
+        match = pattern.search(value)
 
         if match:
             return int(match.group(1))
 
     return None
+
+
+# =========================================================
+# CLASIFICACIÓN
+# =========================================================
+
+# Título y descripción se comparan ya normalizados (en minúsculas).
+_EXCLUDED_TITLES = (
+    # Early career.
+    re.compile(
+        r"\b(?:intern|internship|working student|student|graduate|"
+        r"new grad|new graduate|trainee|apprentice|apprenticeship)\b"
+    ),
+    # Seniority por encima del perfil.
+    re.compile(
+        r"\b(?:senior|sr|staff|principal|lead|head|manager|director|"
+        r"architect|distinguished|expert|vice president|vp)\b"
+    ),
+    # III / 3 se permiten; IV / 4 o superior, no.
+    re.compile(r"\b(?:iv|v|vi|vii|viii|ix|x|[4-9])\b"),
+)
+
+_CORE_DATA_ROLE = re.compile(
+    r"\b(?:data engineer(?:ing)?|analytics engineer(?:ing)?|"
+    r"data platform engineer|data infrastructure engineer|"
+    r"data warehouse engineer|etl engineer|elt engineer|dataops engineer|"
+    r"bi engineer|business intelligence engineer)\b"
+)
+_DATA_ANALYST_ROLE = re.compile(
+    r"\b(?:data analyst|product data analyst|analytics analyst|"
+    r"business intelligence analyst)\b"
+)
+_DATA_SCIENCE_ROLE = re.compile(
+    r"\b(?:data scientist|machine learning engineer|ml engineer|"
+    r"mlops engineer|applied ai engineer|ai engineer)\b"
+)
+_ADJACENT_ENGINEERING_ROLE = re.compile(
+    r"\b(?:platform engineer|software engineer|backend engineer|"
+    r"cloud engineer|devops engineer)\b"
+)
+
+_JUNIOR_LEVEL = re.compile(r"\b(?:junior|jr|associate|entry)\b")
+_LEVEL_I_II = re.compile(r"\b(?:engineer\s+(?:i|ii)|level\s*[12])\b")
+_MID_LEVEL = re.compile(r"\b(?:mid|mid-level|intermediate)\b")
+_LEVEL_III = re.compile(r"\b(?:iii|level\s*3)\b")
+
+
+def _word_patterns(*words):
+    return tuple(re.compile(rf"\b{re.escape(word)}\b") for word in words)
+
+
+_STRONG_DATA_SIGNALS = tuple(
+    re.compile(signal)
+    for signal in (
+        r"\bdata pipelines?\b|\bpipelines?\s+de\s+datos\b",
+        r"\b(?:etl|elt)\b|extract.{0,30}transform.{0,30}load",
+        r"\bdata ingestion\b|\bingesta de datos\b",
+        r"\bdata warehouse\b|\bdata lake\b|\blakehouse\b",
+        r"\bdata model(?:ing|ling)\b|\bmodelado de datos\b",
+        r"\b(?:batch|stream) processing\b",
+        r"\b(?:spark|pyspark|databricks)\b",
+        r"\b(?:airflow|dbt)\b",
+        r"\b(?:kafka|event streaming)\b",
+        r"\b(?:snowflake|bigquery|redshift|microsoft fabric)\b",
+    )
+)
+_TECHNICAL_SIGNALS = _word_patterns(
+    "sql", "python", "java", "scala", "azure", "aws", "gcp", "terraform",
+    "kubernetes", "docker",
+)
+_ML_SIGNALS = _word_patterns(
+    "machine learning", "deep learning", "nlp", "mlops", "model deployment",
+    "model training", "feature engineering", "python", "spark", "databricks",
+)
+
+
+def _count_signals(signals, text):
+    return sum(1 for signal in signals if signal.search(text))
 
 
 def classify(job: Job) -> MatchResult | None:
@@ -294,493 +415,77 @@ def classify(job: Job) -> MatchResult | None:
     ----------------
     Experiencia actual aproximada: 1 año.
 
-    Roles prioritarios:
-    - Data Engineer
-    - Analytics Engineer
-    - Data Platform Engineer
-    - Data Infrastructure Engineer
-    - Data Warehouse Engineer
-    - ETL / ELT Engineer
-    - DataOps Engineer
-    - BI Engineer
+    Roles prioritarios: Data Engineer, Analytics Engineer, Data Platform /
+    Infrastructure / Warehouse Engineer, ETL / ELT Engineer, DataOps
+    Engineer y BI Engineer.
 
     También mostramos como STRETCH:
     - Mid / III
     - hasta 3 años requeridos
-    - Data Analyst técnico
-    - Product Data Analyst técnico
+    - Data Analyst / Product Data Analyst técnico
     - Data Scientist técnico
     - ML / MLOps / Applied AI
     - Platform / Software Engineer con fuerte componente Data
 
     NO queremos:
-    - Internships
-    - Graduate / New Grad
-    - Trainee / Apprentice
-    - Working Student
-    - Senior
-    - Staff
-    - Principal
-    - Lead
-    - Manager
-    - Director
-    - Architect
+    - Internships, Graduate / New Grad, Trainee / Apprentice, Working Student
+    - Senior, Staff, Principal, Lead, Manager, Director, Architect
     - 4+ años mínimos de experiencia
     - nivel IV / 4 o superior
     - ubicaciones fuera de España que no sean remotas
 
     RESULTADOS
     ----------
-    Buena coincidencia:
-        claramente alineado y nivel compatible.
-
-    Stretch:
-        algo por encima o rol adyacente pero razonable.
-
-    None:
-        fuera de objetivo.
+    Buena coincidencia: claramente alineado y nivel compatible.
+    Stretch: algo por encima o rol adyacente pero razonable.
+    None: fuera de objetivo.
     """
 
-    title = normalize(job.title or "")
-
-    raw_description = job.description or ""
-
-    description = normalize(
-        raw_description
-    )
-
-    location = job.location
-
-    if not matches_target_location(location):
+    if not matches_target_location(job.location):
         return None
 
-    # =========================================================
-    # 1. DESCARTES ABSOLUTOS POR TÍTULO
-    # =========================================================
+    title = normalize(job.title)
 
-    early_career = re.search(
-        r"\b("
-        r"intern|internship|"
-        r"working student|student|"
-        r"graduate|new grad|new graduate|"
-        r"trainee|apprentice|apprenticeship"
-        r")\b",
-        title,
-    )
-
-    if early_career:
+    if any(pattern.search(title) for pattern in _EXCLUDED_TITLES):
         return None
-
-    senior = re.search(
-        r"\b("
-        r"senior|sr|"
-        r"staff|principal|"
-        r"lead|head|"
-        r"manager|director|"
-        r"architect|"
-        r"distinguished|expert|"
-        r"vice president|vp"
-        r")\b",
-        title,
-    )
-
-    if senior:
-        return None
-
-    # III / 3 SE PERMITEN.
-    # IV / 4+ NO.
-    advanced_grade = re.search(
-        r"\b("
-        r"iv|v|vi|vii|viii|ix|x|"
-        r"[4-9]"
-        r")\b",
-        title,
-    )
-
-    if advanced_grade:
-        return None
-
-    # =========================================================
-    # 2. EXPERIENCIA
-    # =========================================================
 
     experience_text = (
-        job.experience_text
-        or extract_experience(
-            raw_description
-        )
+        job.experience_text or extract_experience(job.description)
     )
+    years = required_experience_years(experience_text)
 
-    years = required_experience_years(
-        experience_text
-    )
-
-    # Regla global:
-    # 0-2 años -> objetivo
-    # 3 años   -> stretch
-    # 4+       -> fuera
+    # 0-2 años -> objetivo; 3 años -> stretch; 4 o más -> fuera.
     if years is not None and years >= 4:
         return None
 
-    # =========================================================
-    # 3. FAMILIAS DE ROLES
-    # =========================================================
+    description = normalize(job.description)
+    strong_data_count = _count_signals(_STRONG_DATA_SIGNALS, description)
+    role = _match_role(title, description, strong_data_count)
 
-    core_data_role = re.search(
-        r"\b("
-        r"data engineer(?:ing)?|"
-        r"analytics engineer(?:ing)?|"
-        r"data platform engineer|"
-        r"data infrastructure engineer|"
-        r"data warehouse engineer|"
-        r"etl engineer|"
-        r"elt engineer|"
-        r"dataops engineer|"
-        r"bi engineer|"
-        r"business intelligence engineer"
-        r")\b",
-        title,
-    )
-
-    data_analyst_role = re.search(
-        r"\b("
-        r"data analyst|"
-        r"product data analyst|"
-        r"analytics analyst|"
-        r"business intelligence analyst"
-        r")\b",
-        title,
-    )
-
-    data_science_role = re.search(
-        r"\b("
-        r"data scientist|"
-        r"machine learning engineer|"
-        r"ml engineer|"
-        r"mlops engineer|"
-        r"applied ai engineer|"
-        r"ai engineer"
-        r")\b",
-        title,
-    )
-
-    adjacent_engineering_role = re.search(
-        r"\b("
-        r"platform engineer|"
-        r"software engineer|"
-        r"backend engineer|"
-        r"cloud engineer|"
-        r"devops engineer"
-        r")\b",
-        title,
-    )
-
-    # =========================================================
-    # 4. SEÑALES FUERTES DE DATA ENGINEERING
-    # =========================================================
-
-    strong_data_signals = [
-        r"\bdata pipelines?\b" + r"|\bpipelines?\s+de\s+datos\b",
-
-        r"\b(?:etl|elt)\b" + r"|extract.{0,30}transform.{0,30}load",
-
-        r"\bdata ingestion\b" + r"|\bingesta de datos\b",
-
-        r"\bdata warehouse\b" + r"|\bdata lake\b" + r"|\blakehouse\b",
-
-        r"\bdata model(?:ing|ling)\b" + r"|\bmodelado de datos\b",
-
-        r"\b(?:batch|stream) processing\b",
-
-        r"\b(?:spark|pyspark|databricks)\b",
-
-        r"\b(?:airflow|dbt)\b",
-
-        r"\b(?:kafka|event streaming)\b",
-
-        r"\b(?:snowflake|bigquery|redshift|" + r"microsoft fabric)\b",
-    ]
-
-    strong_data_count = sum(
-        bool(
-            re.search(
-                signal,
-                description,
-            )
-        )
-        for signal in strong_data_signals
-    )
-
-    # =========================================================
-    # 5. SEÑALES TÉCNICAS GENERALES
-    # =========================================================
-
-    technical_signals = [
-        r"\bsql\b",
-        r"\bpython\b",
-        r"\bjava\b",
-        r"\bscala\b",
-        r"\bazure\b",
-        r"\baws\b",
-        r"\bgcp\b",
-        r"\bterraform\b",
-        r"\bkubernetes\b",
-        r"\bdocker\b",
-    ]
-
-    technical_count = sum(
-        bool(
-            re.search(
-                signal,
-                description,
-            )
-        )
-        for signal in technical_signals
-    )
-
-    # =========================================================
-    # 6. SEÑALES ML / AI
-    # =========================================================
-
-    ml_signals = [
-        r"\bmachine learning\b",
-        r"\bdeep learning\b",
-        r"\bnlp\b",
-        r"\bmlops\b",
-        r"\bmodel deployment\b",
-        r"\bmodel training\b",
-        r"\bfeature engineering\b",
-        r"\bpython\b",
-        r"\bspark\b",
-        r"\bdatabricks\b",
-    ]
-
-    ml_count = sum(
-        bool(
-            re.search(
-                signal,
-                description,
-            )
-        )
-        for signal in ml_signals
-    )
-
-    # =========================================================
-    # 7. ¿EL ROL ENCAJA?
-    # =========================================================
-
-    role_type = None
-    reason = None
-    reason_codes = []
-
-    if core_data_role:
-        role_type = "core"
-        reason_codes.append(MatchReasonCode.CORE_DATA_ROLE)
-
-        reason = (
-            "Rol directamente alineado "
-            "con Data Engineering"
-        )
-
-    elif data_analyst_role:
-        # Queremos analistas técnicos,
-        # no puestos puramente business.
-        if (
-            strong_data_count >= 1
-            or technical_count >= 2
-        ):
-            role_type = "analyst"
-            reason_codes.append(
-                MatchReasonCode.TECHNICAL_DATA_ANALYST
-            )
-
-            reason = (
-                "Data Analyst con contenido "
-                "técnico relevante"
-            )
-
-        else:
-            return None
-
-    elif data_science_role:
-        if (
-            ml_count >= 2
-            or strong_data_count >= 1
-        ):
-            role_type = "ml"
-            reason_codes.append(MatchReasonCode.TECHNICAL_ML_ROLE)
-
-            reason = (
-                "Data Science / ML con "
-                "contenido técnico relevante"
-            )
-
-        else:
-            return None
-
-    elif adjacent_engineering_role:
-        # Software / Platform solo interesa si
-        # realmente hay mucho Data Engineering.
-        if strong_data_count >= 3:
-            role_type = "adjacent"
-            reason_codes.append(
-                MatchReasonCode.DATA_HEAVY_ADJACENT_ROLE
-            )
-
-            reason = (
-                f"Rol de ingeniería con "
-                f"{strong_data_count} señales "
-                "fuertes de Data Engineering"
-            )
-
-        else:
-            return None
-
-    else:
+    if role is None:
         return None
 
-    # =========================================================
-    # 8. NIVEL DEL PUESTO
-    # =========================================================
+    role_code, role_reason = role
 
-    junior_level = re.search(
-        r"\b("
-        r"junior|jr|associate|entry"
-        r")\b",
-        title,
-    )
-
-    level_i_ii = re.search(
-        r"\b("
-        r"engineer\s+i|"
-        r"engineer\s+ii|"
-        r"level\s*1|"
-        r"level\s*2"
-        r")\b",
-        title,
-    )
-
-    mid_level = re.search(
-        r"\b("
-        r"mid|mid-level|"
-        r"intermediate|"
-        r"engineer\s+iii|"
-        r"level\s*3"
-        r")\b",
-        title,
-    )
-
-    grade_iii = re.search(
-        r"\biii\b",
-        title,
-    )
-
-    # =========================================================
-    # 9. CLASIFICACIÓN FINAL
-    # =========================================================
-
-    # Roles adyacentes siempre son Stretch.
-    if role_type in {
-        "analyst",
-        "ml",
-        "adjacent",
-    }:
-        status = "Stretch"
-
-        level = (
-            "Rol técnico adyacente "
-            "razonable para el perfil"
-        )
-
-    # 3 años / Mid / III -> Stretch.
-    elif (
-        years == 3
-        or mid_level
-        or grade_iii
-    ):
-        status = "Stretch"
-
-        level = (
-            "Mid / III / hasta 3 años: "
-            "stretch razonable"
-        )
-
-        if years == 3:
-            reason_codes.append(
-                MatchReasonCode.THREE_YEARS_STRETCH
-            )
-
-        if re.search(
-            r"\b(?:engineer\s+iii|level\s*3|iii)\b",
-            title,
-        ):
-            reason_codes.append(
-                MatchReasonCode.LEVEL_III_STRETCH
-            )
-        elif mid_level:
-            reason_codes.append(
-                MatchReasonCode.MID_LEVEL_STRETCH
-            )
-
-    # Core Data + experiencia <= 2.
-    elif (
-        years is not None
-        and years <= 2
-    ):
-        status = "Buena coincidencia"
-
-        level = (
-            f"Experiencia compatible: "
-            f"{years} año(s)"
-        )
-        reason_codes.append(
-            MatchReasonCode.EXPERIENCE_COMPATIBLE
-        )
-
-    # Core Data explícitamente Junior / I / II.
-    elif junior_level or level_i_ii:
-        status = "Buena coincidencia"
-
-        level = (
-            "Nivel inicial/intermedio "
-            "compatible"
-        )
-
-        if junior_level:
-            reason_codes.append(MatchReasonCode.JUNIOR_LEVEL)
-
-        if level_i_ii:
-            reason_codes.append(MatchReasonCode.LEVEL_I_II)
-
-    # Data Engineer sin nivel ni años:
-    # lo mostramos, pero no asumimos que sea junior.
+    if role_code is MatchReasonCode.CORE_DATA_ROLE:
+        status, level, level_codes = _core_level(title, years)
     else:
+        # Los roles adyacentes siempre son Stretch.
         status = "Stretch"
+        level = "Rol técnico adyacente razonable para el perfil"
+        level_codes = []
 
-        level = (
-            "Rol muy alineado, "
-            "pero nivel no especificado"
-        )
-        reason_codes.append(MatchReasonCode.LEVEL_UNSPECIFIED)
-
-    # =========================================================
-    # 10. MOTIVO
-    # =========================================================
-
-    details = [reason]
+    reason_codes = [role_code, *level_codes]
+    details = [role_reason]
 
     if strong_data_count:
         reason_codes.append(MatchReasonCode.STRONG_DATA_SIGNALS)
         details.append(
-            f"{strong_data_count} señales "
-            "fuertes de Data Engineering"
+            f"{strong_data_count} señales fuertes de Data Engineering"
         )
 
     if experience_text:
-        details.append(
-            "Experiencia publicada: "
-            f"{experience_text}"
-        )
+        details.append(f"Experiencia publicada: {experience_text}")
 
     return MatchResult(
         status=status,
@@ -791,27 +496,175 @@ def classify(job: Job) -> MatchResult | None:
     )
 
 
+def _match_role(title, description, strong_data_count):
+    """
+    Familia del rol como (reason code, motivo), o None si no encaja. Solo
+    cuenta la primera familia que aparece en el título.
+    """
+
+    if _CORE_DATA_ROLE.search(title):
+        return (
+            MatchReasonCode.CORE_DATA_ROLE,
+            "Rol directamente alineado con Data Engineering",
+        )
+
+    if _DATA_ANALYST_ROLE.search(title):
+        # Queremos analistas técnicos, no puestos puramente business.
+        technical_count = _count_signals(_TECHNICAL_SIGNALS, description)
+
+        if strong_data_count >= 1 or technical_count >= 2:
+            return (
+                MatchReasonCode.TECHNICAL_DATA_ANALYST,
+                "Data Analyst con contenido técnico relevante",
+            )
+
+        return None
+
+    if _DATA_SCIENCE_ROLE.search(title):
+        ml_count = _count_signals(_ML_SIGNALS, description)
+
+        if ml_count >= 2 or strong_data_count >= 1:
+            return (
+                MatchReasonCode.TECHNICAL_ML_ROLE,
+                "Data Science / ML con contenido técnico relevante",
+            )
+
+        return None
+
+    # Software / Platform solo interesa si realmente hay mucho Data
+    # Engineering.
+    if _ADJACENT_ENGINEERING_ROLE.search(title) and strong_data_count >= 3:
+        return (
+            MatchReasonCode.DATA_HEAVY_ADJACENT_ROLE,
+            f"Rol de ingeniería con {strong_data_count} señales "
+            "fuertes de Data Engineering",
+        )
+
+    return None
+
+
+def _core_level(title, years):
+    """Estado, nivel y reason codes de un rol core con 0-3 años o sin años."""
+
+    mid_level = _MID_LEVEL.search(title)
+    level_iii = _LEVEL_III.search(title)
+
+    if years == 3 or mid_level or level_iii:
+        codes = []
+
+        if years == 3:
+            codes.append(MatchReasonCode.THREE_YEARS_STRETCH)
+
+        if level_iii:
+            codes.append(MatchReasonCode.LEVEL_III_STRETCH)
+        elif mid_level:
+            codes.append(MatchReasonCode.MID_LEVEL_STRETCH)
+
+        return "Stretch", "Mid / III / hasta 3 años: stretch razonable", codes
+
+    if years is not None and years <= 2:
+        return (
+            "Buena coincidencia",
+            f"Experiencia compatible: {years} año(s)",
+            [MatchReasonCode.EXPERIENCE_COMPATIBLE],
+        )
+
+    junior_level = _JUNIOR_LEVEL.search(title)
+    level_i_ii = _LEVEL_I_II.search(title)
+
+    if junior_level or level_i_ii:
+        codes = []
+
+        if junior_level:
+            codes.append(MatchReasonCode.JUNIOR_LEVEL)
+
+        if level_i_ii:
+            codes.append(MatchReasonCode.LEVEL_I_II)
+
+        return (
+            "Buena coincidencia",
+            "Nivel inicial/intermedio compatible",
+            codes,
+        )
+
+    # Data Engineer sin nivel ni años: lo mostramos, pero no asumimos que sea
+    # junior.
+    return (
+        "Stretch",
+        "Rol muy alineado, pero nivel no especificado",
+        [MatchReasonCode.LEVEL_UNSPECIFIED],
+    )
+
+
+# =========================================================
+# GEOGRAFÍA
+# =========================================================
+
+# Cargados bajo demanda por _prepare_geography().
+_COUNTRY_ALIASES = None
+_CITY_COUNTRIES = None
+_US_CITY_NAMES = None
+
+_UNITED_STATES = "United States"
+
+# Abreviaturas USPS. Muchas son también códigos ISO de país ("Atlanta, GA"
+# no es Gabón ni "Chicago, IL" Israel), así que junto a una ciudad de EE. UU.
+# se interpretan como estado.
+_US_STATE_CODES = frozenset({
+    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "dc", "fl", "ga", "hi",
+    "id", "il", "in", "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn",
+    "ms", "mo", "mt", "ne", "nv", "nh", "nj", "nm", "ny", "nc", "nd", "oh",
+    "ok", "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa",
+    "wv", "wi", "wy",
+})
+
+# Nombres de estado inequívocos: "Florida" no es la ciudad cubana. Georgia
+# se trata aparte porque también es un país.
+_US_STATE_NAMES = (
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+    "connecticut", "delaware", "florida", "hawaii", "idaho", "illinois",
+    "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine",
+    "maryland", "massachusetts", "michigan", "minnesota", "mississippi",
+    "missouri", "montana", "nebraska", "nevada", "new hampshire",
+    "new jersey", "new mexico", "new york", "north carolina",
+    "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania",
+    "rhode island", "south carolina", "south dakota", "tennessee", "texas",
+    "utah", "vermont", "virginia", "washington", "west virginia",
+    "wisconsin", "wyoming",
+)
+# El más largo primero: "west virginia" antes que "virginia".
+_US_STATE_NAME = re.compile(
+    r"(?<![a-z])(?:"
+    + "|".join(
+        re.escape(state)
+        for state in sorted(_US_STATE_NAMES, key=len, reverse=True)
+    )
+    + r")(?![a-z])"
+)
+_US_STATE_SHARED_WITH_COUNTRY = "Georgia"
+
+_LOCATION_PIECE_SEPARATORS = re.compile(r"[,/()]")
+_WORK_MODE_WORDS = re.compile(
+    r"\b(?:remote|office|hybrid|onsite|on-site|based)\b"
+)
+
+
 def _geo_normalize(value):
-    value = unicodedata.normalize(
-        "NFKD",
-        value or "",
-    ).encode(
-        "ascii",
-        "ignore",
-    ).decode("ascii")
+    """Como normalize(), pero sin acentos: "Bogotá" -> "bogota"."""
 
-    value = value.casefold()
+    ascii_value = (
+        unicodedata.normalize("NFKD", value or "")
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
 
-    return re.sub(
-        r"\s+",
-        " ",
-        value,
-    ).strip()
+    return normalize(ascii_value)
 
 
 def _prepare_geography():
     global _COUNTRY_ALIASES
     global _CITY_COUNTRIES
+    global _US_CITY_NAMES
 
     if _COUNTRY_ALIASES is not None:
         return
@@ -820,20 +673,16 @@ def _prepare_geography():
 
     gc = geonamescache.GeonamesCache()
 
-    countries = gc.get_countries()
-    cities = gc.get_cities()
-
     aliases = {}
     code_to_name = {}
 
-    for code, data in countries.items():
+    for code, data in gc.get_countries().items():
         name = data.get("name")
 
         if not name:
             continue
 
         code_to_name[code.upper()] = name
-
         aliases[_geo_normalize(name)] = name
         aliases[code.casefold()] = name
 
@@ -847,51 +696,231 @@ def _prepare_geography():
         "usa": "United States",
         "uae": "United Arab Emirates",
         "czech republic": "Czechia",
+        # Sin este alias, "ireland" dentro de "Northern Ireland" daría
+        # Irlanda en lugar de Reino Unido.
+        "northern ireland": "United Kingdom",
+        "bosnia & herzegovina": "Bosnia and Herzegovina",
     })
 
+    # Ante ciudades homónimas gana la más poblada.
     city_candidates = {}
+    us_city_names = set()
 
-    for city in cities.values():
-        country_code = (
-            city.get("countrycode") or ""
-        ).upper()
-
-        country = code_to_name.get(
-            country_code
-        )
+    for city in gc.get_cities().values():
+        country = code_to_name.get((city.get("countrycode") or "").upper())
 
         if not country:
             continue
 
         population = city.get("population") or 0
 
-        for city_name in {
-            city.get("name"),
-            city.get("ascii"),
-        }:
+        for city_name in {city.get("name"), city.get("ascii")}:
             if not city_name:
                 continue
 
             key = _geo_normalize(city_name)
 
+            if country == _UNITED_STATES:
+                us_city_names.add(key)
+
             previous = city_candidates.get(key)
 
-            if (
-                previous is None
-                or population > previous[0]
-            ):
-                city_candidates[key] = (
-                    population,
-                    country,
-                )
+            if previous is None or population > previous[0]:
+                city_candidates[key] = (population, country)
 
     _COUNTRY_ALIASES = aliases
-
+    _US_CITY_NAMES = frozenset(us_city_names)
     _CITY_COUNTRIES = {
-        key: value[1]
-        for key, value
-        in city_candidates.items()
+        key: country for key, (_, country) in city_candidates.items()
     }
+
+
+def _city_keys(name):
+    # geonames escribe "St. Louis"; las ofertas, a menudo "Saint Louis".
+    yield name
+
+    if name.startswith("saint "):
+        yield "st. " + name.removeprefix("saint ")
+
+
+def _city_country(name):
+    """País de la ciudad más poblada con ese nombre, si existe."""
+
+    for key in _city_keys(name):
+        country = _CITY_COUNTRIES.get(key)
+
+        if country:
+            return country
+
+    return None
+
+
+def _is_us_city(name, alternative_country):
+    """
+    Indica si `name` debe leerse como ciudad de EE. UU. frente a
+    `alternative_country`.
+
+    Cuenta la ciudad más poblada con ese nombre, y también una homónima de
+    EE. UU. cuando la más poblada no está en `alternative_country`: así
+    "Birmingham, AL" es Alabama y no Albania, pero "Panama City, PA" sigue
+    siendo Panamá.
+    """
+
+    best = _city_country(name)
+
+    if best == _UNITED_STATES:
+        return True
+
+    return best != alternative_country and any(
+        key in _US_CITY_NAMES for key in _city_keys(name)
+    )
+
+
+def _explicit_country_names(normalized):
+    """
+    Países escritos completos. Gana la coincidencia más larga para que
+    "Papua New Guinea" no añada Guinea ni "Northern Ireland" Irlanda.
+    """
+
+    found = []
+
+    for alias, country in _COUNTRY_ALIASES.items():
+        if len(alias) <= 3:
+            continue
+
+        for match in re.finditer(
+            r"(?<![a-z])" + re.escape(alias) + r"(?![a-z])",
+            normalized,
+        ):
+            found.append((match.start(), match.end(), country))
+
+    # Las más largas primero; a igual longitud se conserva el orden.
+    found.sort(key=lambda item: item[1] - item[0], reverse=True)
+
+    accepted = []
+    countries = []
+
+    for start, end, country in found:
+        if any(
+            start < other_end and other_start < end
+            for other_start, other_end in accepted
+        ):
+            continue
+
+        accepted.append((start, end))
+
+        if country not in countries:
+            countries.append(country)
+
+    return countries
+
+
+def _beside_us_city(pieces, piece, alternative_country):
+    """Indica si otra pieza del segmento es una ciudad de EE. UU."""
+
+    return any(
+        _is_us_city(other, alternative_country)
+        for other in pieces
+        if other != piece
+    )
+
+
+def _explicit_countries(segment):
+    """
+    Países escritos o codificados en un segmento de ubicación. Las ciudades
+    solo se consultan para decidir si un código o "Georgia" es un estado de
+    EE. UU.
+    """
+
+    pieces = [
+        _geo_normalize(piece)
+        for piece in _LOCATION_PIECE_SEPARATORS.split(segment)
+        if piece.strip()
+    ]
+
+    # Un estado de EE. UU. escrito completo indica EE. UU. y no debe
+    # leerse como país: "New Jersey" no es Jersey ni "New Mexico" México.
+    normalized, states_named = _US_STATE_NAME.subn(
+        " ", _geo_normalize(segment)
+    )
+
+    # 1. País completo escrito en el texto
+    names = _explicit_country_names(normalized)
+
+    # 2. Código ISO independiente: "Madrid, ES", "Berlin, DE", "Porto, PT"
+    codes = [
+        (piece, _COUNTRY_ALIASES[piece])
+        for piece in pieces
+        if len(piece) <= 3 and piece in _COUNTRY_ALIASES
+    ]
+
+    us_explicit = (
+        states_named > 0
+        or _UNITED_STATES in names
+        or any(country == _UNITED_STATES for _, country in codes)
+    )
+
+    # "Atlanta, Georgia" o "Remote, US, Georgia" es el estado.
+    georgia = _US_STATE_SHARED_WITH_COUNTRY
+
+    if georgia in names and (
+        us_explicit
+        or _beside_us_city(pieces, georgia.casefold(), georgia)
+    ):
+        names.remove(georgia)
+
+    countries = list(names)
+
+    for piece, country in codes:
+        if piece in _US_STATE_CODES and (
+            us_explicit
+            or _beside_us_city(pieces, piece, country)
+        ):
+            country = _UNITED_STATES
+
+        # Un país escrito completo prevalece sobre códigos de dos letras del
+        # mismo segmento, que suelen ser regiones: "India, MH, Pune" es
+        # Maharashtra y no Islas Marshall; "Vitória, ES, Brazil", Espírito
+        # Santo y no España. US y UK no son abreviaturas regionales
+        # ("US / Canada").
+        if (
+            names
+            and len(piece) == 2
+            and piece not in {"us", "uk"}
+            and country not in names
+        ):
+            continue
+
+        if country not in countries:
+            countries.append(country)
+
+    if not countries and states_named:
+        countries.append(_UNITED_STATES)
+
+    return countries
+
+
+def _country_from_city(segment):
+    """
+    País de la primera ciudad reconocida: primero el segmento completo sin
+    palabras de modalidad y después cada una de sus piezas.
+    """
+
+    cleaned = _WORK_MODE_WORDS.sub(" ", _geo_normalize(segment))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,-")
+    pieces = [
+        piece.strip()
+        for piece in _LOCATION_PIECE_SEPARATORS.split(cleaned)
+        if piece.strip()
+    ]
+
+    for candidate in [cleaned, *pieces]:
+        country = _city_country(candidate)
+
+        if country:
+            return country
+
+    return None
 
 
 def infer_countries(location):
@@ -913,105 +942,20 @@ def infer_countries(location):
 
     result = []
 
-    def add(country):
-        if country and country not in result:
-            result.append(country)
-
-    segments = re.split(
-        r"[;|]",
-        str(location),
-    )
-
-    for raw_segment in segments:
+    for raw_segment in re.split(r"[;|]", str(location)):
         segment = raw_segment.strip()
 
         if not segment:
             continue
 
-        normalized = _geo_normalize(segment)
-
-        explicit_countries = []
-
-        def add_explicit(country):
-            if country and country not in explicit_countries:
-                explicit_countries.append(country)
-
-        # 1. País completo escrito en el texto
-        for alias, country in _COUNTRY_ALIASES.items():
-
-            if len(alias) <= 3:
-                continue
-
-            if re.search(
-                r"(?<![a-z])"
-                + re.escape(alias)
-                + r"(?![a-z])",
-                normalized,
-            ):
-                add_explicit(country)
-
-        # 2. Código ISO independiente:
-        # Madrid, ES
-        # Berlin, DE
-        # Porto, PT
-        pieces = [
-            _geo_normalize(piece)
-            for piece in re.split(
-                r"[,/()]",
-                segment,
-            )
-            if piece.strip()
+        # Si ya sabemos el país por texto o código, no reinterpretamos la
+        # ciudad.
+        countries = _explicit_countries(segment) or [
+            _country_from_city(segment)
         ]
 
-        for piece in pieces:
-            if (
-                len(piece) <= 3
-                and piece in _COUNTRY_ALIASES
-            ):
-                add_explicit(
-                    _COUNTRY_ALIASES[piece]
-                )
-
-        # Si ya sabemos el país por texto o código,
-        # NO intentamos reinterpretar la ciudad.
-        if explicit_countries:
-            for country in explicit_countries:
-                add(country)
-
-            continue
-
-        # 3. Inferencia por ciudad
-        cleaned = re.sub(
-            r"\b("
-            r"remote|office|hybrid|"
-            r"onsite|on-site|based"
-            r")\b",
-            " ",
-            normalized,
-        )
-
-        cleaned = re.sub(
-            r"\s+",
-            " ",
-            cleaned,
-        ).strip(" ,-")
-
-        candidates = [cleaned]
-
-        candidates.extend(
-            part.strip()
-            for part in re.split(
-                r"[,/()]",
-                cleaned,
-            )
-            if part.strip()
-        )
-
-        for candidate in candidates:
-            country = _CITY_COUNTRIES.get(candidate)
-
-            if country:
-                add(country)
-                break
+        for country in countries:
+            if country and country not in result:
+                result.append(country)
 
     return result

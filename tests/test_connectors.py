@@ -238,7 +238,7 @@ class EmailNotificationTests(unittest.TestCase):
             source_health=(required, optional),
         )
 
-        self.assertIn("Fuentes required unhealthy", html)
+        self.assertIn("Fuentes required con problemas", html)
         self.assertIn("Required &amp; Co", html)
         self.assertIn("upstream &lt;down&gt;", html)
         self.assertIn("Required & Co", text)
@@ -266,8 +266,41 @@ class EmailNotificationTests(unittest.TestCase):
             source_health=(optional,),
         )
 
-        self.assertNotIn("Fuentes required unhealthy", html)
+        self.assertNotIn("Fuentes required con problemas", html)
         self.assertNotIn("ALERTA DE SALUD", text)
+
+    def test_email_alerts_required_source_with_persistent_empty_snapshot(self):
+        def healthy(company, *, required, empty_runs):
+            return SourceHealth(
+                company=company,
+                source="greenhouse",
+                required=required,
+                health_status="healthy",
+                recent_runs=10,
+                successful_runs=10,
+                success_rate=1.0,
+                consecutive_failures=0,
+                last_success_at=None,
+                last_failure_at=None,
+                last_error_type=None,
+                last_error_message=None,
+                consecutive_empty_snapshots=empty_runs,
+            )
+
+        _subject, html, text = notifications.build_match_email(
+            [self.make_match()],
+            source_health=(
+                healthy("Moved & Co", required=True, empty_runs=3),
+                healthy("Blip Co", required=True, empty_runs=2),
+                healthy("Optional Co", required=False, empty_runs=10),
+            ),
+        )
+
+        self.assertIn("Fuentes required con problemas", html)
+        self.assertIn("Moved &amp; Co", html)
+        self.assertIn("snapshot vacío en 3 ejecuciones seguidas", text)
+        self.assertNotIn("Blip Co", text)
+        self.assertNotIn("Optional Co", text)
 
     @patch("job_radar.notifications.email.get_active_matches")
     @patch("job_radar.notifications.email.urlopen")
@@ -426,6 +459,31 @@ class GreenhouseTests(unittest.TestCase):
             jobs[0].experience_text,
             "2 years of experience",
         )
+        self.assertEqual(jobs[0].url, "https://example.com/jobs/123")
+
+    @patch("job_radar.connectors.ats.fetch_json")
+    def test_greenhouse_upgrades_http_url_to_https(self, fetch_json):
+        fetch_json.return_value = {
+            "jobs": [
+                {
+                    "id": 5108007008,
+                    "title": "Data Engineer",
+                    "location": {"name": "Madrid, Spain"},
+                    "absolute_url": (
+                        "http://block.xyz/careers/jobs/5108007008"
+                        "?gh_jid=5108007008"
+                    ),
+                    "content": "",
+                }
+            ]
+        }
+
+        jobs = ats.fetch_greenhouse("Block", "block")
+
+        self.assertEqual(
+            jobs[0].url,
+            "https://block.xyz/careers/jobs/5108007008?gh_jid=5108007008",
+        )
 
 
 class AshbyTests(unittest.TestCase):
@@ -570,7 +628,7 @@ class EightfoldTests(unittest.TestCase):
             },
         ]
 
-        with redirect_stdout(io.StringIO()):
+        with self.assertLogs(common.LOGGER, level="INFO"):
             jobs = ats.fetch_eightfold(
                 "PayPal",
                 "paypal.eightfold.ai",
@@ -726,10 +784,10 @@ class AntGroupTests(unittest.TestCase):
 class WorkdayTests(unittest.TestCase):
     def test_relevant_title_filter(self):
         self.assertTrue(
-            ats.workday_relevant_title("Data Platform Engineer")
+            common.is_relevant_title("Data Platform Engineer")
         )
         self.assertFalse(
-            ats.workday_relevant_title("Commercial Account Manager")
+            common.is_relevant_title("Commercial Account Manager")
         )
 
     @patch("job_radar.connectors.common.urlopen")
@@ -761,7 +819,7 @@ class WorkdayTests(unittest.TestCase):
             }),
         ]
 
-        with redirect_stdout(io.StringIO()):
+        with self.assertLogs(common.LOGGER, level="INFO"):
             jobs = ats.fetch_workday(
                 "Example Bank",
                 "example.wd3.myworkdayjobs.com",
@@ -779,6 +837,35 @@ class WorkdayTests(unittest.TestCase):
         )
         self.assertEqual(jobs[1].description, "")
         self.assertEqual(urlopen.call_count, 2)
+
+    @patch("job_radar.connectors.common.urlopen")
+    def test_workday_keeps_additional_locations(self, urlopen):
+        urlopen.side_effect = [
+            JsonResponse({
+                "jobPostings": [{
+                    "title": "Data Engineer",
+                    "locationsText": "3 Locations",
+                    "externalPath": "/job/London/Data-Engineer_R789",
+                }]
+            }),
+            JsonResponse({
+                "jobPostingInfo": {
+                    "location": "London",
+                    "additionalLocations": ["Madrid", "London", "Lisbon"],
+                    "jobDescription": "<p>Build data pipelines.</p>",
+                }
+            }),
+        ]
+
+        with self.assertLogs(common.LOGGER, level="INFO"):
+            jobs = ats.fetch_workday(
+                "Example Bank",
+                "example.wd3.myworkdayjobs.com",
+                "example",
+                "Careers",
+            )
+
+        self.assertEqual(jobs[0].location, "London; Madrid; Lisbon")
 
     @patch("job_radar.connectors.common.time.sleep")
     @patch("job_radar.connectors.common.urlopen")
@@ -841,7 +928,7 @@ class NewCompanyConfigurationTests(unittest.TestCase):
 
         self.assertEqual(
             len(registry.CONNECTORS),
-            93 + len(greenhouse_companies) + len(ashby_companies),
+            92 + len(greenhouse_companies) + len(ashby_companies),
         )
 
     def test_spain_product_and_fintech_sources_are_configured(self):
@@ -924,7 +1011,9 @@ class NewCompanyConfigurationTests(unittest.TestCase):
             "block",
         )
         self.assertIn("Chime", registry.GREENHOUSE_COMPANIES)
-        self.assertIn("Nubank", registry.GREENHOUSE_COMPANIES)
+        # Nubank dejó de publicar en Greenhouse (board vacía) y usa Ashby.
+        self.assertNotIn("Nubank", registry.GREENHOUSE_COMPANIES)
+        self.assertEqual(registry.ASHBY_COMPANIES["Nubank"], "nubank")
         self.assertIn("Robinhood", registry.GREENHOUSE_COMPANIES)
         self.assertIn("SoFi", registry.GREENHOUSE_COMPANIES)
         self.assertIn("Coinbase", registry.GREENHOUSE_COMPANIES)
@@ -1078,7 +1167,7 @@ class WorkableTests(unittest.TestCase):
             },
         ]
 
-        with self.assertLogs(ats.LOGGER, level="INFO"):
+        with self.assertLogs(common.LOGGER, level="INFO"):
             jobs = ats.fetch_workable("Yapily", "yapily")
 
         self.assertEqual(jobs[0].source, "workable:yapily")
@@ -1162,7 +1251,7 @@ class SmartRecruitersTests(unittest.TestCase):
             },
         ]
 
-        with redirect_stdout(io.StringIO()):
+        with self.assertLogs(common.LOGGER, level="INFO"):
             jobs = ats.fetch_smartrecruiters("IFS", "IFS1")
 
         self.assertEqual(len(jobs), 2)
@@ -1295,6 +1384,508 @@ class SageTests(unittest.TestCase):
             "country": "Spain",
             "office": "Barcelona",
         }])
+
+
+    @patch("job_radar.connectors.custom.fetch_text")
+    @patch("job_radar.connectors.custom.read_url")
+    def test_pagination_and_relevant_job_enrichment(
+        self,
+        read_url,
+        fetch_text,
+    ):
+        def listing(rows, next_link):
+            body = (
+                '<form id="form1" action="/careers/fRecruit__ApplyJobList">'
+                '<input type="hidden" name="ViewState" value="VS1">'
+            )
+
+            for vacancy, title, country in rows:
+                body += (
+                    f'<tr class="dataRow"><td>{vacancy}</td><td>'
+                    '<a href="/careers/fRecruit__ApplyJob?'
+                    f'vacancyNo={vacancy}&amp;portal=English">{title}</a>'
+                    f"</td><td>Eng</td><td>{country}</td><td>Office</td></tr>"
+                )
+
+            if next_link:
+                body += (
+                    '<a href="#" onclick="jsfcljs(document.forms[0],'
+                    "'form1:next,form1:next','');\" "
+                    'class="link-pagination">Next</a>'
+                )
+
+            return (body + "</form>").encode("utf-8")
+
+        read_url.side_effect = [
+            listing(
+                [("VN1", "Data Engineer", "UK"), ("VN2", "Sales", "UK")],
+                next_link=True,
+            ),
+            listing([("VN3", "Data Analyst", "Spain")], next_link=False),
+        ]
+        fetch_text.side_effect = lambda url, **_kwargs: (
+            '<script type="application/ld+json">{"@type": "JobPosting", '
+            '"description": "<p>2 years of experience</p>", '
+            '"jobLocation": {"address": {"addressLocality": "Newcastle"}}}'
+            "</script>"
+            if "VN1" in url
+            else "<html>no JSON-LD</html>"
+        )
+
+        with self.assertLogs(common.LOGGER, level="INFO") as logs:
+            jobs = custom.fetch_sage()
+
+        def url(vacancy):
+            return (
+                "https://sagehr.my.salesforce-sites.com/careers/"
+                f"fRecruit__ApplyJob?vacancyNo={vacancy}&portal=English"
+            )
+
+        common_fields = {"source": "sagepeople:sage", "company": "Sage"}
+        self.assertEqual(jobs, [
+            make_job(
+                **common_fields,
+                source_job_id="VN1",
+                title="Data Engineer",
+                location="Newcastle",
+                url=url("VN1"),
+                description="2 years of experience",
+                experience_text="2 years of experience",
+            ),
+            make_job(
+                **common_fields,
+                source_job_id="VN2",
+                title="Sales",
+                location="Office, UK",
+                url=url("VN2"),
+            ),
+            make_job(
+                **common_fields,
+                source_job_id="VN3",
+                title="Data Analyst",
+                location="Office, Spain",
+                url=url("VN3"),
+            ),
+        ])
+        postback = read_url.call_args_list[1].args[0]
+        self.assertEqual(
+            postback.data.decode("utf-8"),
+            "ViewState=VS1&form1=form1&form1%3Anext=form1%3Anext",
+        )
+        self.assertIn(
+            "enrichment_finished company='Sage' source=sagepeople "
+            "enriched=1 failures=1",
+            "\n".join(logs.output),
+        )
+
+
+def make_job(**fields):
+    defaults = {
+        "location": None,
+        "description": "",
+        "salary_text": None,
+        "experience_text": None,
+    }
+    return Job(**{**defaults, **fields})
+
+
+class ConnectorHelperTests(unittest.TestCase):
+    def test_join_unique_skips_empty_values_and_duplicates(self):
+        self.assertEqual(
+            common.join_unique(["Madrid", None, "", "Remote", "Madrid"]),
+            "Madrid; Remote",
+        )
+        self.assertEqual(
+            common.join_unique(["Lekki", "Lagos"], separator=", "),
+            "Lekki, Lagos",
+        )
+        self.assertIsNone(common.join_unique([None, ""]))
+
+    def test_text_fields_prefers_structured_salary_and_extracted_experience(
+        self,
+    ):
+        self.assertEqual(
+            common.text_fields(
+                "Salary €40,000 - €50,000. 2 years of experience.",
+                salary_text="40k EUR",
+                experience_fallback="5 years of experience",
+            ),
+            {
+                "description": (
+                    "Salary €40,000 - €50,000. 2 years of experience."
+                ),
+                "salary_text": "40k EUR",
+                "experience_text": "2 years of experience",
+            },
+        )
+        self.assertEqual(
+            common.text_fields("", experience_fallback="1-2 years"),
+            {
+                "description": "",
+                "salary_text": None,
+                "experience_text": "1-2 years",
+            },
+        )
+
+    def test_format_salary(self):
+        self.assertEqual(
+            ats.format_salary(1, 2, "EUR", "per-year-salary"),
+            "1 – 2 EUR / per year salary",
+        )
+        self.assertEqual(ats.format_salary(None, 9), "9")
+        self.assertIsNone(ats.format_salary(None, None, "EUR", "year"))
+
+    def test_offset_pages_stop_at_total_or_empty_page(self):
+        pages = {
+            0: {"items": [1, 2], "total": 3},
+            2: {"items": [3], "total": 3},
+        }
+        offsets = []
+
+        def fetch_page(offset):
+            offsets.append(offset)
+            return pages.get(offset, {})
+
+        self.assertEqual(
+            common.fetch_offset_pages(
+                fetch_page,
+                items_key="items",
+                total_key="total",
+            ),
+            [1, 2, 3],
+        )
+        self.assertEqual(offsets, [0, 2])
+
+
+class TeamtailorTests(unittest.TestCase):
+    @patch("job_radar.connectors.custom.fetch_json")
+    def test_jsonld_location_and_salary_mapping(self, fetch_json):
+        fetch_json.return_value = {"items": [
+            {
+                "id": 1,
+                "title": "Data Engineer",
+                "url": "https://jobs.example.com/1",
+                "content_html": "<p>2 years of experience</p>",
+                "_jobposting": {
+                    "jobLocation": [
+                        {"address": {
+                            "addressLocality": "Madrid",
+                            "addressRegion": {"name": "Madrid"},
+                            "addressCountry": "ES",
+                        }},
+                        {"address": {
+                            "addressLocality": "Madrid",
+                            "addressCountry": "ES",
+                        }},
+                        "invalid",
+                        {"address": {}},
+                    ],
+                    "jobLocationType": "TELECOMMUTE",
+                    "applicantLocationRequirements": [
+                        {"name": "Spain"},
+                        {},
+                        {"name": "Portugal"},
+                    ],
+                    "baseSalary": {
+                        "currency": "EUR",
+                        "value": {
+                            "minValue": 40000,
+                            "maxValue": 50000,
+                            "unitText": "YEAR",
+                        },
+                    },
+                },
+            },
+            {
+                "id": 2,
+                "title": "Analyst",
+                "url": "https://jobs.example.com/2",
+                "_jobposting": {
+                    "description": "<p>Python</p>",
+                    "jobLocation": {
+                        "address": {"addressCountry": {"name": "PT"}},
+                    },
+                    "jobLocationType": "TELECOMMUTE",
+                    "applicantLocationRequirements": {"name": "EU"},
+                    "baseSalary": {"value": {"value": 7}},
+                },
+            },
+            {
+                "id": 3,
+                "title": "Bare",
+                "url": "https://jobs.example.com/3",
+                "_jobposting": None,
+            },
+        ]}
+
+        jobs = custom.fetch_teamtailor_company(
+            "Example",
+            "https://jobs.example.com/",
+            "teamtailor:example",
+        )
+
+        common_fields = {"source": "teamtailor:example", "company": "Example"}
+        self.assertEqual(jobs, [
+            make_job(
+                **common_fields,
+                source_job_id="1",
+                title="Data Engineer",
+                location="Madrid, ES; Remote - Spain, Portugal",
+                url="https://jobs.example.com/1",
+                description="2 years of experience",
+                salary_text="40000 – 50000 EUR / year",
+                experience_text="2 years of experience",
+            ),
+            make_job(
+                **common_fields,
+                source_job_id="2",
+                title="Analyst",
+                location="PT; Remote - EU",
+                url="https://jobs.example.com/2",
+                description="Python",
+                salary_text="7",
+            ),
+            make_job(
+                **common_fields,
+                source_job_id="3",
+                title="Bare",
+                url="https://jobs.example.com/3",
+            ),
+        ])
+        fetch_json.assert_called_once_with(
+            "https://jobs.example.com/jobs.json",
+            context="company='Example' source=teamtailor:example",
+        )
+
+    def test_catch_all_teamtailor_sources_are_configured(self):
+        connectors = {
+            connector.company: connector for connector in registry.CONNECTORS
+        }
+
+        for company, base_url, source in (
+            ("Spendesk", "https://career.spendesk.com", "teamtailor:spendesk"),
+            ("Seedtag", "https://jobs.seedtag.com", "teamtailor:seedtag"),
+            (
+                "Lingokids",
+                "https://jobs.lingokids.com",
+                "teamtailor:lingokids",
+            ),
+        ):
+            with self.subTest(company=company):
+                connector = connectors[company]
+                self.assertEqual(connector.source, "teamtailor")
+                self.assertTrue(connector.catch_all)
+                self.assertEqual(
+                    connector.fetcher.args,
+                    (company, base_url, source),
+                )
+
+
+class EightfoldPaginationTests(unittest.TestCase):
+    @patch("job_radar.connectors.ats.fetch_json")
+    def test_pages_deduplicate_ids_and_failed_details_keep_listing(
+        self,
+        fetch_json,
+    ):
+        def respond(url, **_kwargs):
+            if "start=0" in url:
+                return {"data": {"count": 3, "positions": [
+                    {"id": 1, "name": "Data Engineer", "locations": ["A"]},
+                    {"id": 1, "name": "Duplicate"},
+                ]}}
+            if "start=2" in url:
+                return {"data": {"count": 3, "positions": [
+                    {"id": 2, "name": "Data Analyst", "locations": ["B"]},
+                ]}}
+            if "position_id=1" in url:
+                raise TimeoutError("detail timed out")
+            return {"data": {
+                "locations": ["Madrid"],
+                "jobDescription": "<p>2 years of experience</p>",
+            }}
+
+        fetch_json.side_effect = respond
+
+        with self.assertLogs(common.LOGGER, level="INFO") as logs:
+            jobs = ats.fetch_eightfold("PayPal", "paypal.example", "x.com")
+
+        self.assertEqual(jobs, [
+            make_job(
+                source="eightfold:x.com",
+                source_job_id="1",
+                company="PayPal",
+                title="Data Engineer",
+                location="A",
+                url="https://paypal.example/careers/job/1?domain=x.com",
+            ),
+            make_job(
+                source="eightfold:x.com",
+                source_job_id="2",
+                company="PayPal",
+                title="Data Analyst",
+                location="Madrid",
+                url="https://paypal.example/careers/job/2?domain=x.com",
+                description="2 years of experience",
+                experience_text="2 years of experience",
+            ),
+        ])
+        output = "\n".join(logs.output)
+        self.assertIn(
+            "enrichment_started company='PayPal' source=eightfold "
+            "candidates=2",
+            output,
+        )
+        self.assertIn("error_type=TimeoutError", output)
+        self.assertIn(
+            "enrichment_finished company='PayPal' source=eightfold "
+            "enriched=1 failures=1",
+            output,
+        )
+
+
+class WorkableErrorTests(unittest.TestCase):
+    LISTING = {"jobs": [{
+        "shortcode": "AAA",
+        "title": "Data Engineer",
+        "url": "https://apply.workable.com/j/AAA",
+    }]}
+
+    @patch("job_radar.connectors.ats.fetch_json")
+    def test_recoverable_detail_error_keeps_listing_job(self, fetch_json):
+        fetch_json.side_effect = [self.LISTING, ValueError("bad json")]
+
+        with self.assertLogs(common.LOGGER, level="INFO") as logs:
+            jobs = ats.fetch_workable("Yapily", "yapily")
+
+        self.assertEqual(jobs[0].description, "")
+        self.assertIn(
+            "enrichment_finished company='Yapily' source=workable "
+            "enriched=0 failures=1",
+            "\n".join(logs.output),
+        )
+
+    @patch("job_radar.connectors.ats.fetch_json")
+    def test_unexpected_detail_error_propagates(self, fetch_json):
+        fetch_json.side_effect = [self.LISTING, KeyError("contract")]
+
+        with self.assertLogs(common.LOGGER, level="INFO"):
+            with self.assertRaises(KeyError):
+                ats.fetch_workable("Yapily", "yapily")
+
+
+class DassaultPaginationTests(unittest.TestCase):
+    @patch("job_radar.connectors.custom.fetch_json")
+    def test_offset_pagination_and_required_fields(self, fetch_json):
+        def hit(job_id, url_key="content_cta_1_url"):
+            return {"metas": [
+                {"name": "card_id", "value": job_id},
+                {"name": "content_title", "value": f"Job {job_id}"},
+                {"name": url_key, "value": f"https://3ds.example/{job_id}"},
+            ]}
+
+        fetch_json.side_effect = [
+            {"nhits": 3, "hits": [hit("1"), {"metas": [{"value": "x"}]}]},
+            {"nhits": 3, "hits": [hit("3", "content_cta_1_url_id")]},
+        ]
+
+        jobs = custom.fetch_dassault_systemes()
+
+        self.assertEqual(
+            [(job.source_job_id, job.url) for job in jobs],
+            [("1", "https://3ds.example/1"), ("3", "https://3ds.example/3")],
+        )
+        offsets = [
+            call.args[0].split("&b=")[1].split("&")[0]
+            for call in fetch_json.call_args_list
+        ]
+        self.assertEqual(offsets, ["0", "2"])
+
+
+class ThetaRayTests(unittest.TestCase):
+    @patch("job_radar.connectors.custom.fetch_json")
+    def test_comeet_mapping(self, fetch_json):
+        fetch_json.return_value = [
+            {
+                "uid": "U1",
+                "name": "Data Engineer",
+                "details": [
+                    {"value": "<p>2 years of experience</p>"},
+                    {"value": None},
+                ],
+                "location": {"name": "Tel Aviv"},
+                "url_comeet_hosted_page": "https://comeet.example/1",
+            },
+            {
+                "uid": "U2",
+                "name": "Internal",
+                "is_internal": True,
+                "url_active_page": "https://comeet.example/2",
+            },
+            {"uid": "U3", "name": "Without URL"},
+            {
+                "uid": 4,
+                "name": "Plain location",
+                "location": "Remote",
+                "url_recruit_hosted_page": "https://comeet.example/4",
+            },
+        ]
+
+        jobs = custom.fetch_thetaray()
+
+        self.assertEqual(jobs, [
+            make_job(
+                source="comeet:thetaray",
+                source_job_id="U1",
+                company="ThetaRay",
+                title="Data Engineer",
+                location="Tel Aviv",
+                url="https://comeet.example/1",
+                description="2 years of experience",
+                experience_text="2 years of experience",
+            ),
+            make_job(
+                source="comeet:thetaray",
+                source_job_id="4",
+                company="ThetaRay",
+                title="Plain location",
+                url="https://comeet.example/4",
+            ),
+        ])
+
+
+class MambuTests(unittest.TestCase):
+    @patch("job_radar.connectors.custom.fetch_text")
+    def test_listing_and_detail_pages(self, fetch_text):
+        pages = {
+            "search": (
+                '<a href="/jobs/12/data-engineer/job">x</a>'
+                '<a href="/jobs/12/data-engineer/job?x">x</a>'
+                "<a href='/jobs/7/ops/job'>y</a>"
+            ),
+            "/jobs/12/": (
+                "<h1>Data <b>Engineer</b></h1>"
+                "<div>Job Locations ES-Madrid Posted Date 1 day ago</div>"
+            ),
+            "/jobs/7/": "<html>no title</html>",
+        }
+        fetch_text.side_effect = lambda url, **_kwargs: next(
+            body for key, body in pages.items() if key in url
+        )
+
+        jobs = custom.fetch_mambu()
+
+        url = "https://careers-mambu.icims.com/jobs/12/job?in_iframe=1"
+        self.assertEqual(jobs, [make_job(
+            source="icims:mambu",
+            source_job_id="12",
+            company="Mambu",
+            title="Data Engineer",
+            location="ES-Madrid",
+            url=url,
+            description=(
+                "Data Engineer Job Locations ES-Madrid Posted Date 1 day ago"
+            ),
+        )])
 
 
 if __name__ == "__main__":

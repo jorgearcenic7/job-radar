@@ -3,7 +3,7 @@ import os
 import unittest
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 try:
     import psycopg
@@ -635,6 +635,61 @@ class FeedbackCommandArgumentTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("Falta DATABASE_URL", errors.getvalue())
+
+
+
+@unittest.skipIf(psycopg is None, "psycopg no instalado")
+class FeedbackRepositoryWithoutDatabaseTests(unittest.TestCase):
+    def test_pending_with_non_positive_limit_does_not_query(self):
+        with patch("psycopg.connect") as connect:
+            pending = FeedbackRepository("postgresql://test").get_pending(
+                limit=0
+            )
+
+        self.assertEqual(pending, [])
+        connect.assert_not_called()
+
+    def test_report_maps_each_query_to_its_breakdown(self):
+        cursor = MagicMock()
+        cursor.__enter__.return_value = cursor
+        cursor.fetchall.side_effect = [
+            [("overall", 5, 3)],
+            [("1", 2, 1), ("2", 3, 2)],
+            [(GOOD, 4, 3)],
+            [("CORE_DATA_ROLE", 5, 3)],
+        ]
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.cursor.return_value = cursor
+
+        with patch("psycopg.connect", return_value=connection):
+            report = FeedbackRepository("postgresql://test").get_report(
+                rules_version=2
+            )
+
+        self.assertEqual(report.overall, RelevanceStats("overall", 5, 3))
+        self.assertEqual(
+            report.by_rules_version,
+            (RelevanceStats("1", 2, 1), RelevanceStats("2", 3, 2)),
+        )
+        self.assertEqual(report.by_match_status, (RelevanceStats(GOOD, 4, 3),))
+        self.assertEqual(
+            report.by_reason_code,
+            (RelevanceStats("CORE_DATA_ROLE", 5, 3),),
+        )
+        statements = [
+            " ".join(call.args[0].split())
+            for call in cursor.execute.call_args_list
+        ]
+        self.assertTrue(statements[1].endswith("ORDER BY match_rules_version"))
+        self.assertIn("GROUP BY match_status", statements[2])
+        self.assertIn("unnest(match_reason_codes)", statements[3])
+        self.assertTrue(
+            all(
+                call.args[1] == {"rules_version": 2}
+                for call in cursor.execute.call_args_list
+            )
+        )
 
 
 if __name__ == "__main__":

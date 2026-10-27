@@ -1,15 +1,16 @@
 import json
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from html import escape
+from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from job_radar.connectors.common import request_with_retry
-from job_radar.observability import SourceHealth
+from job_radar.observability import SourceHealth, has_persistent_empty_snapshot
 from job_radar.storage import get_active_matches
 
 
@@ -17,8 +18,10 @@ RESEND_EMAILS_URL = "https://api.resend.com/emails"
 DEFAULT_NOTIFICATION_FROM = "Job Radar <onboarding@resend.dev>"
 LOGGER = logging.getLogger(__name__)
 
+Match = Mapping[str, Any]
 
-def safe_https_url(value):
+
+def safe_https_url(value: Any) -> str | None:
     try:
         parsed = urlsplit(value or "")
     except (TypeError, ValueError):
@@ -30,56 +33,63 @@ def safe_https_url(value):
     return value
 
 
+def _unhealthy_detail(source: SourceHealth) -> str:
+    success_rate = (
+        f"{source.success_rate:.0%}"
+        if source.success_rate is not None
+        else "sin datos"
+    )
+    error = source.last_error_type or "sin error registrado"
+    if source.last_error_message:
+        message = " ".join(source.last_error_message.split())[:160]
+        error = f"{error}: {message}"
+
+    return (
+        f"{success_rate}, {source.consecutive_failures} fallos consecutivos. "
+        f"Último error: {error}"
+    )
+
+
 def _build_health_alert(
     source_health: Iterable[SourceHealth],
 ) -> tuple[str, list[str]]:
-    unhealthy = tuple(
-        source
-        for source in source_health
-        if source.required and source.health_status == "unhealthy"
+    required = tuple(source for source in source_health if source.required)
+    problems = [
+        (source, _unhealthy_detail(source))
+        for source in required
+        if source.health_status == "unhealthy"
+    ]
+    problems.extend(
+        (
+            source,
+            f"snapshot vacío en {source.consecutive_empty_snapshots} "
+            "ejecuciones seguidas. Revisa si cambió de ATS o de slug.",
+        )
+        for source in required
+        if has_persistent_empty_snapshot(source)
     )
-    if not unhealthy:
+    if not problems:
         return "", []
 
-    html_items = []
-    text_items = ["ALERTA DE SALUD DE FUENTES REQUIRED"]
-    for source in unhealthy:
-        success_rate = (
-            f"{source.success_rate:.0%}"
-            if source.success_rate is not None
-            else "sin datos"
-        )
-        error = source.last_error_type or "sin error registrado"
-        if source.last_error_message:
-            message = " ".join(source.last_error_message.split())[:160]
-            error = f"{error}: {message}"
-
-        html_items.append(
-            "<li><strong>{company}</strong> ({source}): {rate}, "
-            "{failures} fallos consecutivos. Último error: {error}</li>".format(
-                company=escape(source.company),
-                source=escape(source.source),
-                rate=escape(success_rate),
-                failures=source.consecutive_failures,
-                error=escape(error),
-            )
-        )
-        text_items.append(
-            f"- {source.company} ({source.source}): {success_rate}, "
-            f"{source.consecutive_failures} fallos consecutivos. "
-            f"Último error: {error}"
-        )
-
+    html_items = "".join(
+        f"<li><strong>{escape(source.company)}</strong> "
+        f"({escape(source.source)}): {escape(detail)}</li>"
+        for source, detail in problems
+    )
+    text_items = [
+        f"- {source.company} ({source.source}): {detail}"
+        for source, detail in problems
+    ]
     html = (
         '<div style="background:#fef2f2;border:1px solid #fecaca;'
         'border-radius:12px;color:#991b1b;margin:0 0 22px;padding:16px;">'
-        '<strong>Fuentes required unhealthy</strong><ul style="margin:8px 0 0;'
-        f'padding-left:20px;">{"".join(html_items)}</ul></div>'
+        '<strong>Fuentes required con problemas</strong><ul style="margin:8px '
+        f'0 0;padding-left:20px;">{html_items}</ul></div>'
     )
-    return html, [*text_items, ""]
+    return html, ["ALERTA DE SALUD DE FUENTES REQUIRED", *text_items, ""]
 
 
-def _render_match(index, job):
+def _render_match(index: int, job: Match) -> tuple[str, list[str]]:
     company = str(job.get("company") or "Empresa no indicada")
     title = str(job.get("title") or "Puesto sin título")
     status = str(job.get("match_status") or "Coincidencia")
@@ -135,7 +145,7 @@ def _render_match(index, job):
     return html, text
 
 
-def _is_new(job, new_since: datetime | None) -> bool:
+def _is_new(job: Match, new_since: datetime | None) -> bool:
     first_seen_at = job.get("first_seen_at")
     return bool(
         new_since is not None
@@ -144,7 +154,11 @@ def _is_new(job, new_since: datetime | None) -> bool:
     )
 
 
-def _render_matches(jobs, start_index=1, heading=None):
+def _render_matches(
+    jobs: Iterable[Match],
+    start_index: int = 1,
+    heading: str | None = None,
+) -> tuple[list[str], list[str]]:
     html = []
     text = []
 
@@ -164,11 +178,11 @@ def _render_matches(jobs, start_index=1, heading=None):
 
 
 def build_match_email(
-    matches,
-    partial=False,
+    matches: Sequence[Match],
+    partial: bool = False,
     source_health: Iterable[SourceHealth] = (),
     new_since: datetime | None = None,
-):
+) -> tuple[str, str, str]:
     count = len(matches)
     match_label = "coincidencia" if count == 1 else "coincidencias"
     active_label = "activa" if count == 1 else "activas"
@@ -265,10 +279,10 @@ def build_match_email(
 
 
 def send_match_notification(
-    partial=False,
+    partial: bool = False,
     source_health: Iterable[SourceHealth] = (),
     new_since: datetime | None = None,
-):
+) -> str | None:
     api_key = os.getenv("RESEND_API_KEY", "").strip()
 
     if not api_key:
@@ -299,30 +313,25 @@ def send_match_notification(
         "text": text,
     }).encode("utf-8")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "User-Agent": "Job-Radar/1.0",
-    }
-
     # La clave hace seguros los reintentos: Resend no duplica el correo.
     run_id = os.getenv("NOTIFICATION_RUN_ID", "").strip() or str(uuid4())
-    headers["Idempotency-Key"] = f"job-radar/{run_id}"[:256]
-
     request = Request(
         RESEND_EMAILS_URL,
         data=payload,
-        headers=headers,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "Job-Radar/1.0",
+            "Idempotency-Key": f"job-radar/{run_id}"[:256],
+        },
         method="POST",
     )
 
-    def send():
+    def send() -> dict[str, Any]:
         with urlopen(request, timeout=30) as response:
             return json.load(response)
 
-    result = request_with_retry(send, context="resend")
-
-    email_id = result.get("id")
+    email_id = request_with_retry(send, context="resend").get("id")
 
     if not email_id:
         raise ValueError("Resend no devolvió el identificador del correo")

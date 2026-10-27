@@ -25,12 +25,8 @@ from .custom import (
     fetch_dassault_systemes,
     fetch_deel,
     fetch_deel_company,
-    fetch_lingokids,
     fetch_mambu,
-    fetch_revolut,
     fetch_sage,
-    fetch_seedtag,
-    fetch_spendesk,
     fetch_teamtailor_company,
     fetch_thetaray,
     fetch_visma,
@@ -44,7 +40,6 @@ GREENHOUSE_COMPANIES = {
     "Adyen": "adyen",
     "Block (incl. Afterpay)": "block",
     "Chime": "chime",
-    "Nubank": "nubank",
     "Robinhood": "robinhood",
     "SoFi": "sofi",
     "Coinbase": "coinbase",
@@ -109,6 +104,7 @@ ASHBY_COMPANIES = {
     "Prefect": "prefect",
     "PostHog": "posthog",
     "Primer": "primer",
+    "Nubank": "nubank",
 }
 
 WORKDAY_COMPANIES = {
@@ -199,98 +195,78 @@ def _configured(
     return connectors
 
 
-CONNECTORS = tuple(
-    _configured("greenhouse", GREENHOUSE_COMPANIES, fetch_greenhouse)
-    + _configured("ashby", ASHBY_COMPANIES, fetch_ashby)
-    + _configured("workday", WORKDAY_COMPANIES, fetch_workday)
-    + _configured(
-        "smartrecruiters",
-        SMARTRECRUITERS_COMPANIES,
-        fetch_smartrecruiters,
-    )
-    + _configured("lever", LEVER_COMPANIES, fetch_lever)
-    + _configured("deel", DEEL_COMPANIES, fetch_deel_company)
-    + _configured("bamboohr", BAMBOOHR_COMPANIES, fetch_bamboohr)
-    + _configured("eightfold", EIGHTFOLD_COMPANIES, fetch_eightfold)
-    + _configured(
-        "successfactors",
-        SUCCESSFACTORS_COMPANIES,
-        fetch_successfactors,
-    )
-    + _configured("recruitee", RECRUITEE_COMPANIES, fetch_recruitee)
-    + _configured("personio", PERSONIO_COMPANIES, fetch_personio)
-    + _configured("pinpoint", PINPOINT_COMPANIES, fetch_pinpoint)
-    + _configured("workable", WORKABLE_COMPANIES, fetch_workable)
-    + _configured(
+def _catch_all(
+    company: str,
+    source: str,
+    fetcher: Callable[[], list[Job]],
+) -> FunctionConnector:
+    return FunctionConnector(company, source, fetcher, catch_all=True)
+
+
+def _teamtailor(company: str, base_url: str, source: str) -> FunctionConnector:
+    return _catch_all(
+        company,
         "teamtailor",
-        TEAMTAILOR_COMPANIES,
-        fetch_teamtailor_company,
+        partial(fetch_teamtailor_company, company, base_url, source),
     )
-    + [
-        FunctionConnector(
-            "Ant Group / Ant International",
-            "portal propio",
-            fetch_ant_group,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "Spendesk", "teamtailor", fetch_spendesk,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "ThetaRay", "comeet", fetch_thetaray,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "Deel", "portal propio", fetch_deel,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "Mambu", "icims", fetch_mambu,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "Seedtag", "teamtailor", fetch_seedtag,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "Lingokids", "teamtailor", fetch_lingokids,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "Revolut",
-            "portal propio",
-            fetch_revolut,
-            required=False,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "CaixaBank Tech",
-            "portal propio",
-            fetch_caixabank_tech,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "Dassault Systèmes",
-            "portal propio",
-            fetch_dassault_systemes,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "Visma", "portal propio", fetch_visma,
-            catch_all=True,
-        ),
-        FunctionConnector(
-            "Sage", "sagepeople", fetch_sage,
-            catch_all=True,
-        ),
-        # Factorial no expone API ni datos estructurados: se lee el HTML de
-        # la página de empleo, así que cualquier cambio de maqueta se aísla.
-        FunctionConnector(
-            "Embat",
-            "factorial",
-            partial(fetch_factorial, "Embat", "embat.factorialhr.com"),
-            catch_all=True,
-        ),
-    ]
+
+
+CONFIGURED_SOURCES = (
+    ("greenhouse", GREENHOUSE_COMPANIES, fetch_greenhouse),
+    ("ashby", ASHBY_COMPANIES, fetch_ashby),
+    ("workday", WORKDAY_COMPANIES, fetch_workday),
+    ("smartrecruiters", SMARTRECRUITERS_COMPANIES, fetch_smartrecruiters),
+    ("lever", LEVER_COMPANIES, fetch_lever),
+    ("deel", DEEL_COMPANIES, fetch_deel_company),
+    ("bamboohr", BAMBOOHR_COMPANIES, fetch_bamboohr),
+    ("eightfold", EIGHTFOLD_COMPANIES, fetch_eightfold),
+    ("successfactors", SUCCESSFACTORS_COMPANIES, fetch_successfactors),
+    ("recruitee", RECRUITEE_COMPANIES, fetch_recruitee),
+    ("personio", PERSONIO_COMPANIES, fetch_personio),
+    ("pinpoint", PINPOINT_COMPANIES, fetch_pinpoint),
+    ("workable", WORKABLE_COMPANIES, fetch_workable),
+    ("teamtailor", TEAMTAILOR_COMPANIES, fetch_teamtailor_company),
+)
+
+# Portales propios o ATS con una sola empresa: un fallo se aísla por fuente.
+CATCH_ALL_CONNECTORS = (
+    _catch_all(
+        "Ant Group / Ant International",
+        "portal propio",
+        fetch_ant_group,
+    ),
+    _teamtailor(
+        "Spendesk",
+        "https://career.spendesk.com",
+        "teamtailor:spendesk",
+    ),
+    _catch_all("ThetaRay", "comeet", fetch_thetaray),
+    _catch_all("Deel", "portal propio", fetch_deel),
+    _catch_all("Mambu", "icims", fetch_mambu),
+    _teamtailor("Seedtag", "https://jobs.seedtag.com", "teamtailor:seedtag"),
+    _teamtailor(
+        "Lingokids",
+        "https://jobs.lingokids.com",
+        "teamtailor:lingokids",
+    ),
+    _catch_all("CaixaBank Tech", "portal propio", fetch_caixabank_tech),
+    _catch_all("Dassault Systèmes", "portal propio", fetch_dassault_systemes),
+    _catch_all("Visma", "portal propio", fetch_visma),
+    _catch_all("Sage", "sagepeople", fetch_sage),
+    # Factorial no expone API ni datos estructurados: se lee el HTML de
+    # la página de empleo, así que cualquier cambio de maqueta se aísla.
+    _catch_all(
+        "Embat",
+        "factorial",
+        partial(fetch_factorial, "Embat", "embat.factorialhr.com"),
+    ),
+)
+
+CONNECTORS = (
+    *(
+        connector
+        for source, companies, fetcher in CONFIGURED_SOURCES
+        for connector in _configured(source, companies, fetcher)
+    ),
+    *CATCH_ALL_CONNECTORS,
 )

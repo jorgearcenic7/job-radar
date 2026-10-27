@@ -2,6 +2,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from urllib.error import HTTPError, URLError
 
 from job_radar.connectors import CONNECTORS, Connector, IncompleteSnapshot
@@ -117,14 +118,103 @@ def _duration_ms(started_at: float) -> int:
     return max(0, round((time.perf_counter() - started_at) * 1000))
 
 
-def _can_continue(connector: Connector, error: BaseException) -> bool:
+def _can_continue(connector: Connector, error: Exception) -> bool:
+    # El protocolo Connector no declara catch_all ni required: sin ellos, la
+    # fuente es required y solo continúa ante EXPECTED_CONNECTOR_ERRORS.
     return bool(
-        isinstance(error, Exception)
-        and (
-            getattr(connector, "catch_all", False)
-            or isinstance(error, EXPECTED_CONNECTOR_ERRORS)
-        )
+        getattr(connector, "catch_all", False)
+        or isinstance(error, EXPECTED_CONNECTOR_ERRORS)
     )
+
+
+def _finish_source_run(
+    repository: RunRepository,
+    *,
+    run_id: int,
+    source_run_id: int,
+    connector: Connector,
+    metrics: SourceMetrics,
+    started_at: float,
+    error: Exception | None = None,
+) -> None:
+    duration_ms = _duration_ms(started_at)
+    status = "success" if error is None else "failed"
+    error_details = (
+        {}
+        if error is None
+        else {"error_type": type(error).__name__, "error_message": str(error)}
+    )
+    repository.finish_source_run(
+        source_run_id,
+        status=status,
+        jobs_seen=metrics.jobs_seen,
+        jobs_new=metrics.jobs_new,
+        jobs_closed=metrics.jobs_closed,
+        matches=metrics.matches,
+        duration_ms=duration_ms,
+        snapshot_status=metrics.snapshot_status,
+        closure_suppressed=metrics.closure_suppressed,
+        **error_details,
+    )
+
+    message = (
+        "source_run_finished run_id=%s source_run_id=%s "
+        "company=%r source=%s jobs_seen=%s jobs_new=%s "
+        "jobs_closed=%s matches=%s duration_ms=%s "
+        "status=%s snapshot_status=%s closure_suppressed=%s"
+    )
+    arguments = [
+        run_id,
+        source_run_id,
+        connector.company,
+        connector.source,
+        metrics.jobs_seen,
+        metrics.jobs_new,
+        metrics.jobs_closed,
+        metrics.matches,
+        duration_ms,
+        status,
+        metrics.snapshot_status,
+        metrics.closure_suppressed,
+    ]
+
+    if error is None:
+        LOGGER.info(message, *arguments)
+    else:
+        LOGGER.error(
+            message + " error_type=%s error_message=%r",
+            *arguments,
+            error_details["error_type"],
+            error_details["error_message"],
+        )
+
+
+def _notify_matches(
+    repository: RunRepository,
+    *,
+    run_id: int,
+    partial_run: bool,
+    new_since: datetime,
+) -> bool:
+    """Envía el correo con la salud de las fuentes; False si falla."""
+    try:
+        histories = repository.get_recent_source_runs(limit=HEALTH_WINDOW)
+        send_match_notification(
+            partial=partial_run,
+            source_health=build_source_health(CONNECTORS, histories),
+            new_since=new_since,
+        )
+    except Exception as error:
+        LOGGER.error(
+            "notification_failed run_id=%s error_type=%s "
+            "error_message=%r",
+            run_id,
+            type(error).__name__,
+            str(error),
+        )
+        return False
+
+    return True
 
 
 def _configure_logging() -> None:
@@ -141,7 +231,6 @@ def run(run_repository: RunRepository | None = None) -> int:
     run_started_at = datetime.now(timezone.utc)
     run_id = repository.create_ingestion_run(len(CONNECTORS))
     blocking_failure = False
-    notification_failed = False
     final_status = "running"
     fatal_error: BaseException | None = None
     finalized = False
@@ -161,48 +250,22 @@ def run(run_repository: RunRepository | None = None) -> int:
             )
             started_at = time.perf_counter()
             source_metrics = SourceMetrics()
+            finish_source_run = partial(
+                _finish_source_run,
+                repository,
+                run_id=run_id,
+                source_run_id=source_run_id,
+                connector=connector,
+                metrics=source_metrics,
+                started_at=started_at,
+            )
 
             try:
                 process_connector(connector, source_metrics, repository)
             except Exception as error:
-                duration_ms = _duration_ms(started_at)
                 run_metrics.sources_failed += 1
                 run_metrics.add(source_metrics)
-                repository.finish_source_run(
-                    source_run_id,
-                    status="failed",
-                    jobs_seen=source_metrics.jobs_seen,
-                    jobs_new=source_metrics.jobs_new,
-                    jobs_closed=source_metrics.jobs_closed,
-                    matches=source_metrics.matches,
-                    duration_ms=duration_ms,
-                    snapshot_status=source_metrics.snapshot_status,
-                    closure_suppressed=(
-                        source_metrics.closure_suppressed
-                    ),
-                    error_type=type(error).__name__,
-                    error_message=str(error),
-                )
-                LOGGER.error(
-                    "source_run_finished run_id=%s source_run_id=%s "
-                    "company=%r source=%s jobs_seen=%s jobs_new=%s "
-                    "jobs_closed=%s matches=%s duration_ms=%s "
-                    "status=failed snapshot_status=%s "
-                    "closure_suppressed=%s error_type=%s error_message=%r",
-                    run_id,
-                    source_run_id,
-                    connector.company,
-                    connector.source,
-                    source_metrics.jobs_seen,
-                    source_metrics.jobs_new,
-                    source_metrics.jobs_closed,
-                    source_metrics.matches,
-                    duration_ms,
-                    source_metrics.snapshot_status,
-                    source_metrics.closure_suppressed,
-                    type(error).__name__,
-                    str(error),
-                )
+                finish_source_run(error=error)
 
                 if not _can_continue(connector, error):
                     raise
@@ -210,61 +273,19 @@ def run(run_repository: RunRepository | None = None) -> int:
                 if getattr(connector, "required", True):
                     blocking_failure = True
             else:
-                duration_ms = _duration_ms(started_at)
                 run_metrics.sources_succeeded += 1
                 run_metrics.add(source_metrics)
-                repository.finish_source_run(
-                    source_run_id,
-                    status="success",
-                    jobs_seen=source_metrics.jobs_seen,
-                    jobs_new=source_metrics.jobs_new,
-                    jobs_closed=source_metrics.jobs_closed,
-                    matches=source_metrics.matches,
-                    duration_ms=duration_ms,
-                    snapshot_status=source_metrics.snapshot_status,
-                    closure_suppressed=(
-                        source_metrics.closure_suppressed
-                    ),
-                )
-                LOGGER.info(
-                    "source_run_finished run_id=%s source_run_id=%s "
-                    "company=%r source=%s jobs_seen=%s jobs_new=%s "
-                    "jobs_closed=%s matches=%s duration_ms=%s "
-                    "status=success snapshot_status=%s "
-                    "closure_suppressed=%s",
-                    run_id,
-                    source_run_id,
-                    connector.company,
-                    connector.source,
-                    source_metrics.jobs_seen,
-                    source_metrics.jobs_new,
-                    source_metrics.jobs_closed,
-                    source_metrics.matches,
-                    duration_ms,
-                    source_metrics.snapshot_status,
-                    source_metrics.closure_suppressed,
-                )
+                finish_source_run()
 
-        try:
-            histories = repository.get_recent_source_runs(limit=HEALTH_WINDOW)
-            source_health = build_source_health(CONNECTORS, histories)
-            send_match_notification(
-                partial=blocking_failure,
-                source_health=source_health,
-                new_since=run_started_at,
-            )
-        except Exception as error:
+        notified = _notify_matches(
+            repository,
+            run_id=run_id,
+            partial_run=blocking_failure,
+            new_since=run_started_at,
+        )
+
+        if not notified:
             blocking_failure = True
-            notification_failed = True
-            LOGGER.error(
-                "notification_failed run_id=%s error_type=%s "
-                "error_message=%r",
-                run_id,
-                type(error).__name__,
-                str(error),
-            )
-
-        if notification_failed:
             final_status = "failed"
         elif run_metrics.sources_failed:
             final_status = "partial"

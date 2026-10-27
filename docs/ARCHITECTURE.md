@@ -33,9 +33,10 @@ web/
 | `job_radar/connectors/registry.py` | Empresas, parámetros, orden y flags de ejecución. |
 | `job_radar/connectors/ats.py` | Integraciones reutilizables con ATS. |
 | `job_radar/connectors/custom.py` | Career sites que no encajan en los ATS reutilizables. |
-| `job_radar/connectors/common.py` | HTTP, reintentos, HTML a texto y conversión a `Job`. |
+| `job_radar/connectors/common.py` | HTTP, reintentos, HTML a texto, paginación y enriquecimiento compartidos, y conversión a `Job`. |
 | `matching/rules.py` | Ubicación, salario, experiencia, países y clasificación. |
 | `matching/preparation.py` | Convierte un `Job` en `PreparedJob`. |
+| `storage/connection.py` | URL de base de datos y conexiones PostgreSQL compartidas. |
 | `storage/postgres.py` | Upsert, cierres, reactivación y consulta para email. |
 | `storage/runs.py` | Persistencia de métricas por pipeline y fuente. |
 | `storage/feedback.py` | Registro, pendientes e informe del feedback de relevancia. |
@@ -43,7 +44,7 @@ web/
 | `job_radar/orchestration/snapshots.py` | Evaluación de snapshots vacíos o anómalos. |
 | `job_radar/orchestration/runner.py` | Coordinación secuencial, estados, logs y notificación. |
 | `notifications/email.py` | Render HTML/texto y llamada a Resend. |
-| `web/src/app/page.tsx` | Consulta y render server-side del dashboard. |
+| `web/src/app/page.tsx`, `web/src/lib/jobs.ts` | Render server-side del dashboard y sus consultas. |
 | `sql/` | Schema y migraciones ordenadas, aplicadas por el migrador. |
 | `job_radar/storage/migrations.py` | Tracking, checksums, transacciones y advisory lock. |
 
@@ -199,7 +200,10 @@ completados; la consulta conserva además el último éxito y fallo aunque quede
 fuera de esa ventana. Un run individual (`success` o `failed`), la calidad de
 su snapshot (`healthy`, `suspicious` o `empty`) y el health histórico del
 conector son conceptos independientes. En particular, un snapshot vacío o
-sospechoso no se convierte automáticamente en un fallo del conector.
+sospechoso no se convierte automáticamente en un fallo del conector. Las
+ejecuciones correctas con snapshot `empty` consecutivas se exponen como señal
+aparte (`consecutive_empty_snapshots`) y avisan en el correo a partir de
+`PERSISTENT_EMPTY_SNAPSHOT_RUNS`.
 
 El health es `unknown` sin historial completado; `healthy` si la ejecución más
 reciente funciona y el éxito es al menos 90 %; `degraded` ante un fallo reciente
@@ -215,14 +219,14 @@ anticipado. Las fuentes opcionales exponen health para diagnóstico y nunca
 incumplen el SLO global.
 
 Los conectores configurados por ATS son `required=True` y `catch_all=False`.
-Los conectores personalizados son `catch_all=True`; Revolut es además la única
-fuente `required=False`.
+Los conectores personalizados son `catch_all=True`. El runner admite fuentes
+`required=False`, aunque ahora no hay ninguna configurada.
 
 | Situación | Continúa | Estado final | Código de salida |
 | --- | --- | --- | ---: |
 | Todas las fuentes correctas y correo enviado u omitido sin error | Sí | `success` | 0 |
 | Error recuperable en fuente requerida | Sí | `partial` | 1 |
-| Error recuperable en Revolut | Sí | `partial` | 0 |
+| Error recuperable en fuente opcional | Sí | `partial` | 0 |
 | Error inesperado no capturable | No; se finaliza el run y se relanza | `failed` | excepción |
 | Error de notificación | Termina la ingesta | `failed` | 1 |
 
@@ -231,8 +235,8 @@ Un run puede ser `partial` aunque la fuente fallida sea opcional. El flag
 
 ## Aplicación web
 
-`web/src/app/page.tsx` fuerza render dinámico y ejecuta consultas parametrizadas
-mediante el pool de `web/src/lib/db.ts`. Solo lee `jobs.active = TRUE` y
+`web/src/app/page.tsx` fuerza render dinámico; `web/src/lib/jobs.ts` ejecuta
+las consultas parametrizadas mediante el pool de `web/src/lib/db.ts`. Solo lee `jobs.active = TRUE` y
 oculta las ofertas que llevan más de 7 días sin verse respecto a la última
 ingesta, igual que el correo; medirlo contra la última ingesta evita vaciar la
 web si se detiene todo el pipeline. Muestra cuándo se actualizó por última vez

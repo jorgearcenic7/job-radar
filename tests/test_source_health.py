@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from job_radar.observability import (
+    PERSISTENT_EMPTY_SNAPSHOT_RUNS,
     SourceHealth,
     calculate_source_health,
+    has_persistent_empty_snapshot,
     violates_required_slo,
 )
 from job_radar.storage import SourceRunRecord
@@ -17,7 +19,8 @@ from scripts import source_health
 NOW = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
 
 
-def make_runs(statuses):
+def make_runs(statuses, snapshot_statuses=None):
+    snapshot_statuses = snapshot_statuses or ["healthy"] * len(statuses)
     return tuple(
         SourceRunRecord(
             company="Example",
@@ -26,17 +29,26 @@ def make_runs(statuses):
             finished_at=NOW - timedelta(days=index),
             error_type="TimeoutError" if status == "failed" else None,
             error_message=f"failure {index}" if status == "failed" else None,
+            snapshot_status=snapshot_status,
         )
-        for index, status in enumerate(statuses)
+        for index, (status, snapshot_status) in enumerate(
+            zip(statuses, snapshot_statuses)
+        )
     )
 
 
-def calculate(statuses, *, required=True):
+def calculate(
+    statuses,
+    snapshot_statuses=None,
+    *,
+    company="Example",
+    required=True,
+):
     return calculate_source_health(
-        company="Example",
+        company=company,
         source="greenhouse",
         required=required,
-        runs=make_runs(statuses),
+        runs=make_runs(statuses, snapshot_statuses),
     )
 
 
@@ -99,20 +111,55 @@ class SourceHealthTests(unittest.TestCase):
         self.assertEqual(health.last_success_at, NOW - timedelta(days=10))
 
 
+class EmptySnapshotSignalTests(unittest.TestCase):
+    def test_persistent_empty_snapshot_is_flagged_without_failing_health(self):
+        health = calculate(["success"] * 10, ["empty"] * 10)
+
+        self.assertEqual(health.health_status, "healthy")
+        self.assertEqual(health.consecutive_empty_snapshots, 10)
+        self.assertTrue(has_persistent_empty_snapshot(health))
+        self.assertFalse(violates_required_slo(health))
+
+    def test_streak_stops_at_latest_non_empty_snapshot(self):
+        health = calculate(
+            ["success"] * 4,
+            ["empty", "empty", "healthy", "empty"],
+        )
+
+        self.assertEqual(health.consecutive_empty_snapshots, 2)
+        self.assertFalse(has_persistent_empty_snapshot(health))
+
+    def test_failed_run_breaks_empty_streak(self):
+        health = calculate(
+            ["success", "failed", "success", "success"],
+            ["empty", "unknown", "empty", "empty"],
+        )
+
+        self.assertEqual(health.consecutive_empty_snapshots, 1)
+
+    def test_threshold_is_explicit(self):
+        health = calculate(
+            ["success"] * PERSISTENT_EMPTY_SNAPSHOT_RUNS,
+            ["empty"] * PERSISTENT_EMPTY_SNAPSHOT_RUNS,
+        )
+
+        self.assertTrue(has_persistent_empty_snapshot(health))
+
+
 class SourceHealthCommandTests(unittest.TestCase):
-    def run_check(self, health: SourceHealth):
+    def run_command(self, health: SourceHealth, option: str):
         output = io.StringIO()
         errors = io.StringIO()
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test"}):
             with patch.object(source_health, "_load_health", return_value=(health,)):
                 with redirect_stdout(output), redirect_stderr(errors):
-                    result = source_health.main(["--check"])
+                    result = source_health.main([option])
         return result, output.getvalue(), errors.getvalue()
 
     def test_optional_unhealthy_does_not_fail_check(self):
         health = calculate(["failed", "failed"], required=False)
 
-        result, output, errors = self.run_check(health)
+        result, output, errors = self.run_command(health, "--check")
 
         self.assertEqual(result, 0)
         self.assertIn("SLO de fuentes required cumplido", output)
@@ -121,11 +168,24 @@ class SourceHealthCommandTests(unittest.TestCase):
     def test_required_unhealthy_fails_check(self):
         health = calculate(["failed", "failed"], required=True)
 
-        result, output, errors = self.run_check(health)
+        result, output, errors = self.run_command(health, "--check")
 
         self.assertEqual(result, 1)
         self.assertIn("UNHEALTHY", output)
         self.assertIn("SLO incumplido", errors)
+
+    def test_problems_lists_persistent_empty_snapshot(self):
+        health = calculate(
+            ["success"] * 3,
+            ["empty"] * 3,
+            company="Moved Co",
+        )
+
+        result, output, _errors = self.run_command(health, "--problems")
+
+        self.assertEqual(result, 0)
+        self.assertIn("Moved Co", output)
+        self.assertIn("consecutive_empty_snapshots=3", output)
 
 
 if __name__ == "__main__":
