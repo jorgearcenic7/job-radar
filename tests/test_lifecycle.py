@@ -681,7 +681,7 @@ class LifecycleWithoutDatabaseTests(unittest.TestCase):
             [
                 "WARNING:job_radar.storage.postgres:"
                 "retired_company_jobs_closed company='Old Co' jobs_closed=1",
-                "WARNING:job_radar.storage.postgres:"
+                "WARNING:job_radar.storage.postgres:" +
                 "retired_company_jobs_closed company='Revolut' jobs_closed=2",
             ],
         )
