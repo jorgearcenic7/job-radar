@@ -274,12 +274,150 @@ cd web
 npm ci
 npm audit --omit=dev --audit-level=high
 npm run lint
+npm test
 npm run build
 ```
 
 La CSP usa nonce por petición y las cabeceras defensivas se configuran en el
 repo. TLS, WAF, límites, logs y protección del proyecto dependen de Vercel y no
 se pueden confirmar desde este código.
+
+## Verificaciones de producción
+
+Esta sección explica cómo comprobar lo que el repositorio no puede garantizar.
+No afirma que nada de esto esté configurado: hazlo con acceso a Neon, Vercel y
+GitHub, y anota la fecha de la última verificación.
+
+### Rol de solo lectura de `WEB_DATABASE_URL`
+
+Conéctate **con la credencial de la web** (`psql "$WEB_DATABASE_URL"`) y
+ejecuta:
+
+```sql
+SELECT current_user;
+
+-- Solo can_select debe ser true.
+SELECT
+    has_table_privilege(current_user, 'jobs', 'SELECT') AS can_select,
+    has_table_privilege(current_user, 'jobs', 'INSERT') AS can_insert,
+    has_table_privilege(current_user, 'jobs', 'UPDATE') AS can_update,
+    has_table_privilege(current_user, 'jobs', 'DELETE') AS can_delete,
+    has_table_privilege(current_user, 'jobs', 'TRUNCATE') AS can_truncate;
+
+-- La web solo necesita SELECT sobre jobs.
+SELECT table_name, privilege_type
+FROM information_schema.role_table_grants
+WHERE grantee = current_user
+ORDER BY 1, 2;
+
+-- Sin atributos elevados ni pertenencia a roles administrativos.
+SELECT rolsuper, rolcreaterole, rolcreatedb, rolbypassrls
+FROM pg_roles
+WHERE rolname = current_user;
+
+SELECT parent.rolname
+FROM pg_auth_members AS membership
+JOIN pg_roles AS parent ON parent.oid = membership.roleid
+JOIN pg_roles AS member ON member.oid = membership.member
+WHERE member.rolname = current_user;
+
+-- Prueba negativa: debe fallar con "permission denied" sin tocar filas.
+BEGIN;
+UPDATE jobs SET title = title WHERE FALSE;
+ROLLBACK;
+```
+
+En Neon, los roles creados desde la consola o la API pueden heredar
+`neon_superuser`. Si la consulta de pertenencia lo muestra, el rol **no** es de
+solo lectura: crea uno con SQL (`CREATE ROLE ... LOGIN`,
+`GRANT CONNECT`, `GRANT USAGE ON SCHEMA public`, `GRANT SELECT ON jobs`) y
+sustituye la variable en Vercel.
+
+Revisa también qué otras variables de base de datos recibe el proyecto de
+Vercel. La integración Neon–Vercel puede inyectar `DATABASE_URL`/`POSTGRES_*`
+con el rol propietario. `db.ts` las ignora cuando `VERCEL=1`, pero siguen
+presentes en el entorno de ejecución. Si no las usa nada más, elimínalas del
+proyecto web.
+
+### Backups
+
+El repo no hace copias de seguridad. Comprueba en Neon:
+
+- la ventana de restauración (history retention) del proyecto y del plan;
+- que sabes restaurar: crea una rama desde un instante pasado, ejecuta
+  `DATABASE_URL=<url de la rama> python3 scripts/migrate.py --status`, cuenta
+  las filas de `jobs` y elimina la rama.
+
+Si la ventana de Neon es corta, añade una copia lógica fuera de Neon y prueba
+que se puede leer:
+
+```bash
+pg_dump --format=custom --no-owner "$DATABASE_URL" \
+  --file "job-radar-$(date +%F).dump"
+pg_restore --list "job-radar-$(date +%F).dump" | head
+```
+
+`job_feedback` contiene tus valoraciones; trata el volcado como dato privado.
+
+### Monitorización
+
+Lo que el repo ya proporciona:
+
+- correo tras cada ingesta, con alerta de fuentes `required` `unhealthy` o con
+  snapshot vacío persistente;
+- código de salida 1 del workflow si falla una fuente `required` (GitHub avisa
+  según la configuración de notificaciones de tu cuenta);
+- `python3 scripts/source_health.py --check` para revisar el SLO a mano;
+- la web marca la fecha de actualización en ámbar tras 72 horas sin datos.
+
+Lo que no existe y conviene decidir:
+
+- **Ingesta que no se ejecuta.** Si el workflow no arranca, no llega correo y
+  nadie avisa de su ausencia. Opciones: un heartbeat externo al final del
+  workflow, o revisar que llega el correo cada 2 días.
+- **Disponibilidad de la web.** No hay monitor externo; Vercel muestra logs y
+  errores de funciones en su panel.
+
+### Límites externos de Vercel y Neon
+
+Dependen del plan y no se pueden confirmar desde el código. Revisa:
+
+- **Vercel:** duración máxima y uso de funciones, ancho de banda, reglas de
+  Firewall/rate limiting disponibles y Deployment Protection.
+- **Neon:** almacenamiento, horas de cómputo, autosuspend (la primera petición
+  tras suspender es más lenta), límite de conexiones (la web debería usar el
+  endpoint con pooler) y ventana de restauración.
+
+Parámetros fijados en el repo: el pool de la web usa `max: 5`, y
+`connectionTimeoutMillis`, `query_timeout` y `statement_timeout` de 10 s
+(`web/src/lib/db.ts`). El pipeline usa `connect_timeout=10`.
+
+### Coste por petición y rate limiting
+
+Cada carga de la web ejecuta 6 consultas (1 de frescura y 5 en paralelo) sin
+caché, y la página es dinámica. Están acotadas: filtros de 120 caracteres como
+máximo, página hasta 500, SQL parametrizado y `statement_timeout` de 10 s. Aun
+así, no hay rate limiting: un bot o un crawler que recorra combinaciones de
+filtros consume cómputo de Neon. Un limitador en memoria en `proxy.ts` no
+serviría, porque cada instancia serverless tendría su propio contador. Las
+opciones sin dependencias nuevas son una regla de rate limiting en el Firewall
+de Vercel para `/` y cachear las 4 consultas que no dependen de los filtros.
+
+### Crecimiento de `jobs`
+
+Las ofertas cerradas se conservan con su descripción. En octubre de 2026 se
+cerraban unas 330–930 ofertas por ingesta (logs de Actions) y la descripción
+media de Greenhouse rondaba 5,3 KB. A ese ritmo, `jobs` crece del orden de
+cientos de MB al año antes de compresión. Vigila el tamaño
+(`SELECT pg_size_pretty(pg_total_relation_size('jobs'));`) frente al límite
+del plan. Si hace falta una política de retención, recuerda que `job_feedback`
+referencia `jobs` con `ON DELETE RESTRICT`.
+
+Los índices actuales son la clave primaria `(source, source_job_id)` e
+`idx_jobs_active (active)`. Con el volumen actual, las consultas de la web
+recorren casi todas las filas activas (el corte de 7 días incluye casi todas),
+así que un índice adicional apenas ayudaría. Revísalo con
+`EXPLAIN (ANALYZE, BUFFERS)` si `jobs` crece en un orden de magnitud.
 
 ## Resend
 
