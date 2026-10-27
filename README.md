@@ -230,6 +230,7 @@ npm ci
 npm audit --omit=dev --audit-level=high
 npm audit --audit-level=high || true
 npm run lint
+npm test
 npm run build
 ```
 
