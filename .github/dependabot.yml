@@ -18,6 +18,13 @@ updates:
       time: "07:15"
       timezone: Europe/Madrid
     open-pull-requests-limit: 5
+    groups:
+      # react-dom exige la misma versión exacta de react como peer: en PRs
+      # separadas, npm ci falla con ERESOLVE en ambas.
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
 
   - package-ecosystem: docker
     directory: "/"
