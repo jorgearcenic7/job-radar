@@ -40,22 +40,36 @@ def make_job(
     )
 
 
-class ExtractSalaryTests(unittest.TestCase):
-    def test_auctane_salary_with_currency_after_amounts(self):
-        description = "Salary range: 43000 € to 52000€/year"
+class CaseTableTestCase(unittest.TestCase):
+    def assert_cases(self, function, cases, assertion=None):
+        assertion = assertion or self.assertEqual
 
-        self.assertEqual(
-            extract_salary(description),
-            "43000 € to 52000€/year",
+        for value, expected in cases:
+            with self.subTest(value=value):
+                assertion(function(value), expected)
+
+
+class ExtractSalaryTests(CaseTableTestCase):
+    def assert_salaries(self, cases):
+        self.assert_cases(extract_salary, cases)
+
+    def assert_no_salary(self, descriptions):
+        self.assert_salaries(
+            [(description, None) for description in descriptions]
         )
 
-    def test_cabify_salary_with_k_and_trailing_currency(self):
-        description = "Excellent Salary conditions: 38K - 50K€"
+    def test_auctane_salary_with_currency_after_amounts(self):
+        self.assert_salaries([
+            ("Salary range: 43000 € to 52000€/year", "43000 € to 52000€/year"),
+        ])
 
-        self.assertEqual(extract_salary(description), "38K - 50K€")
+    def test_cabify_salary_with_k_and_trailing_currency(self):
+        self.assert_salaries([
+            ("Excellent Salary conditions: 38K - 50K€", "38K - 50K€"),
+        ])
 
     def test_extract_salary_formats(self):
-        cases = [
+        self.assert_salaries([
             ("Salary: 43.000 € - 52.000 €", "43.000 € - 52.000 €"),
             ("Salary: 43,000€ - 52,000€", "43,000€ - 52,000€"),
             ("Salary: €43,000 - €52,000", "€43,000 - €52,000"),
@@ -70,41 +84,74 @@ class ExtractSalaryTests(unittest.TestCase):
             ("Salary: €50,000 — €60,000 annually", "€50,000 — €60,000 annually"),
             ("Compensation: EUR 45 000 to 55 000 EUR", "EUR 45 000 to 55 000 EUR"),
             ("Budget: $80k per annum", "$80k per annum"),
-        ]
-
-        for description, expected in cases:
-            with self.subTest(description=description):
-                self.assertEqual(extract_salary(description), expected)
+        ])
 
     def test_ignores_numeric_ranges_without_currency(self):
-        cases = [
+        self.assert_no_salary([
             "Candidates need 3-5 years of experience.",
             "The service processed 43000 to 52000 requests.",
             "Versions 100000 - 120000 are not supported.",
             "",
             None,
-        ]
+        ])
 
-        for description in cases:
-            with self.subTest(description=description):
-                self.assertIsNone(extract_salary(description))
+    def test_ignores_perks_and_business_figures(self):
+        # Textos reales de ClickHouse, Seedtag, Fever y Databricks.
+        self.assert_no_salary([
+            "Time off. - A USD$500 Home office setup if you're remote.",
+            "Additional Perks Home office setup budget up to €1,000 Paid trips",
+            "Swile Meal Card: R$900 monthly for food and dining.",
+            "both capped at a $6,800 monthly wage ceiling.",
+            "selling to Emerging Enterprise ($250 - $1B revenue) accounts",
+            "We offer a $2,000 yearly learning stipend.",
+            "Perks include a $300 gift.",
+        ])
 
-
-class ExtractExperienceTests(unittest.TestCase):
-    def test_extract_experience(self):
-        cases = [
+    def test_keeps_salary_next_to_perks(self):
+        self.assert_salaries([
             (
-                COMPANY_AND_CANDIDATE_EXPERIENCE,
-                "2+ years of experience",
+                "Base Salary: $70,000 – $75,000 USD annually. "
+                "Home office setup budget up to $1,000.",
+                "$70,000 – $75,000 USD annually",
             ),
+        ])
+
+    def test_salary_label_wins_over_nearby_perk_words(self):
+        self.assert_salaries([
+            (
+                "Salary: £42,180 + Car Allowance £6,000 (OTE £70,360)",
+                "£42,180",
+            ),
+            (
+                "Commission + 5-Year Recurring Revenue | "
+                "OTE £7,000-£10,000+/month",
+                "£7,000-£10,000",
+            ),
+        ])
+
+    def test_keeps_small_amounts_with_pay_interval(self):
+        self.assert_salaries([
+            ("Pay: £16 per hour", "£16 per hour"),
+            ("PAY RATE $500/day ABOUT THE ROLE", "$500/day"),
+            ("Hourly Rate $54 — $60 USD", "$54 — $60 USD"),
+        ])
+
+    def test_keeps_country_prefix_of_dollar_currency(self):
+        self.assert_salaries([
+            ("Salary: R$8.000 monthly", "R$8.000 monthly"),
+            ("Salary: CA$120,000 - CA$140,000", "CA$120,000 - CA$140,000"),
+        ])
+
+
+class ExtractExperienceTests(CaseTableTestCase):
+    def test_extract_experience(self):
+        self.assert_cases(extract_experience, [
+            (COMPANY_AND_CANDIDATE_EXPERIENCE, "2+ years of experience"),
             (
                 "Minimum 2 years of relevant experience required",
                 "Minimum 2 years of relevant experience",
             ),
-            (
-                "3-5 years of experience with Spark",
-                "3-5 years of experience",
-            ),
+            ("3-5 years of experience with Spark", "3-5 years of experience"),
             (
                 "Mínimo 3 años de experiencia en SQL",
                 "Mínimo 3 años de experiencia",
@@ -122,48 +169,25 @@ class ExtractExperienceTests(unittest.TestCase):
                 "You bring 1+ years of experience with dbt.",
                 "1+ years of experience",
             ),
-            (
-                "Serving banks for over 12 years of experience.",
-                None,
-            ),
-            (
-                "Nuestra empresa acumula 10 años de experiencia.",
-                None,
-            ),
-            (
-                "A team with 25 years of experience in payments.",
-                None,
-            ),
+            ("Serving banks for over 12 years of experience.", None),
+            ("Nuestra empresa acumula 10 años de experiencia.", None),
+            ("A team with 25 years of experience in payments.", None),
             ("Build data pipelines with Python", None),
             ("", None),
             (None, None),
-        ]
-
-        for description, expected in cases:
-            with self.subTest(description=description):
-                self.assertEqual(
-                    extract_experience(description),
-                    expected,
-                )
+        ])
 
 
-class RequiredExperienceYearsTests(unittest.TestCase):
+class RequiredExperienceYearsTests(CaseTableTestCase):
     def test_required_experience_years(self):
-        cases = [
+        self.assert_cases(required_experience_years, [
             ("5 years' experience", 5),
             ("5 years’ experience", 5),
             ("2 years of experience", 2),
-        ]
-
-        for experience_text, expected in cases:
-            with self.subTest(experience_text=experience_text):
-                self.assertEqual(
-                    required_experience_years(experience_text),
-                    expected,
-                )
+        ])
 
 
-class MatchesTargetLocationTests(unittest.TestCase):
+class MatchesTargetLocationTests(CaseTableTestCase):
     def test_matches_target_location(self):
         cases = [
             ("Madrid, Spain", True),
@@ -186,25 +210,19 @@ class MatchesTargetLocationTests(unittest.TestCase):
             ("Remote - India", False),
             ("Remote - Germany", False),
             ("London, UK", False),
+            ("Vitória, ES, Brazil", False),
+            ("Remote - Atlanta, GA", False),
             ("", False),
             (None, False),
         ]
 
-        for location, expected in cases:
-            with self.subTest(location=location):
-                self.assertIs(
-                    matches_target_location(location),
-                    expected,
-                )
+        self.assert_cases(matches_target_location, cases, self.assertIs)
 
 
 class ClassifyEndToEndTests(unittest.TestCase):
     def test_company_years_do_not_hide_candidate_requirement(self):
         result = classify(
-            make_job(
-                "Madrid, Spain",
-                COMPANY_AND_CANDIDATE_EXPERIENCE,
-            )
+            make_job("Madrid, Spain", COMPANY_AND_CANDIDATE_EXPERIENCE)
         )
 
         self.assertIsNotNone(result)
@@ -229,9 +247,7 @@ class ClassifyEndToEndTests(unittest.TestCase):
             "Remote, Canada",
         ]:
             with self.subTest(location=location):
-                self.assertIsNone(
-                    classify(make_job(location, description))
-                )
+                self.assertIsNone(classify(make_job(location, description)))
 
 
 class MatchMetadataTests(unittest.TestCase):
@@ -241,7 +257,7 @@ class MatchMetadataTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIsInstance(result, MatchResult)
         self.assertEqual(result.status, status)
-        self.assertEqual(MATCH_RULES_VERSION, 1)
+        self.assertEqual(MATCH_RULES_VERSION, 2)
         self.assertEqual(result.rules_version, MATCH_RULES_VERSION)
         self.assertEqual(result.reason_codes, reason_codes)
 
@@ -313,10 +329,7 @@ class MatchMetadataTests(unittest.TestCase):
 
     def test_junior_and_level_i_ii_are_good_matches(self):
         cases = [
-            (
-                "Junior Data Engineer",
-                MatchReasonCode.JUNIOR_LEVEL,
-            ),
+            ("Junior Data Engineer", MatchReasonCode.JUNIOR_LEVEL),
             ("Data Engineer I", MatchReasonCode.LEVEL_I_II),
             ("Data Engineer II", MatchReasonCode.LEVEL_I_II),
         ]
@@ -324,16 +337,9 @@ class MatchMetadataTests(unittest.TestCase):
         for title, level_code in cases:
             with self.subTest(title=title):
                 self.assert_match(
-                    make_job(
-                        "Madrid, Spain",
-                        "",
-                        title=title,
-                    ),
+                    make_job("Madrid, Spain", "", title=title),
                     "Buena coincidencia",
-                    (
-                        MatchReasonCode.CORE_DATA_ROLE,
-                        level_code,
-                    ),
+                    (MatchReasonCode.CORE_DATA_ROLE, level_code),
                 )
 
     def test_mid_and_level_iii_use_specific_codes(self):
@@ -345,16 +351,9 @@ class MatchMetadataTests(unittest.TestCase):
         for title, level_code in cases:
             with self.subTest(title=title):
                 self.assert_match(
-                    make_job(
-                        "Madrid, Spain",
-                        "",
-                        title=title,
-                    ),
+                    make_job("Madrid, Spain", "", title=title),
                     "Stretch",
-                    (
-                        MatchReasonCode.CORE_DATA_ROLE,
-                        level_code,
-                    ),
+                    (MatchReasonCode.CORE_DATA_ROLE, level_code),
                 )
 
     def test_unspecified_core_level_is_stretch(self):
